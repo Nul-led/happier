@@ -600,14 +600,13 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 3,
         marginTop: -1,
     },
+    // As wide as the attention indicator's own slot, so the 16 px working spinner keeps the line's
+    // gap to the status text instead of overhanging it.
     secondaryStatusDotContainer: {
         alignItems: 'center',
         justifyContent: 'center',
-        width: 12,
+        width: 16,
         height: 12,
-    },
-    secondaryStatusDotContainerCompact: {
-        width: 11,
     },
     secondaryStatusDotContainerMinimal: {
         width: 10,
@@ -1688,12 +1687,7 @@ const SessionItemContent = React.memo(
                                 testID={`session-list-status-subtitle-${resolvedSession.id}-${rowAttentionState}`}
                                 style={styles.secondaryLineRow}
                             >
-                                <View
-                                    style={[
-                                        styles.secondaryStatusDotContainer,
-                                        compact ? styles.secondaryStatusDotContainerCompact : null,
-                                    ]}
-                                >
+                                <View style={styles.secondaryStatusDotContainer}>
                                     {statusAttentionIndicator !== 'none' ? (
                                         <SessionRowAttentionIndicator
                                             indicator={statusAttentionIndicator}

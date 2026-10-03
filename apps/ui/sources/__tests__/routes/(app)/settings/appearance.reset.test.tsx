@@ -23,6 +23,9 @@ function nonDefaultAppearanceState(): Record<string, unknown> {
         uiBackdropBlurEnabled: false,
         detailsPaneTabsBehavior: 'persistent',
         settingsNavSidebarEnabled: false,
+        loadingIndicatorStyle: 'radar',
+        loadingIndicatorSpeed: 'fast',
+        loadingIndicatorPause: 'none',
         avatarStyle: 'brutalist',
         showFlavorIcons: false,
         tabBarGitBadgeMode: 'off',
@@ -126,6 +129,7 @@ describe('Appearance reset', () => {
         for (const key of [
             'uiFontScale', 'uiContentWidthMode', 'uiItemDensity', 'uiMultiPanePanelsEnabled',
             'uiBackdropBlurEnabled', 'detailsPaneTabsBehavior', 'settingsNavSidebarEnabled',
+            'loadingIndicatorStyle', 'loadingIndicatorSpeed', 'loadingIndicatorPause',
         ] as const) {
             expect(state[key], key).toEqual(localSettingsDefaults[key]);
         }

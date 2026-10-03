@@ -41,9 +41,14 @@ import {
 } from '@/theme/profiles/themeProfilePersistence';
 import type { LocalSettings } from '@/sync/domains/settings/localSettings';
 import {
+    HAPPIER_SPINNER_PAUSE_IDS,
+    HAPPIER_SPINNER_SPEED_IDS,
     HAPPIER_SPINNER_STYLE_IDS,
+    happierSpinnerStyleTimingControls,
     isHappierSpinnerStyleId,
     normalizeHappierSpinnerStyleId,
+    type HappierSpinnerPauseId,
+    type HappierSpinnerSpeedId,
 } from '@happier-dev/plugin-ui/presentation';
 import {
     LOADING_INDICATOR_STYLE_LABEL_KEYS,
@@ -87,6 +92,8 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
     const [uiContentWidthMode, setUiContentWidthMode] = useLocalSettingMutable('uiContentWidthMode');
     const [uiItemDensity, setUiItemDensity] = useLocalSettingMutable('uiItemDensity');
     const [loadingIndicatorStyle, setLoadingIndicatorStyle] = useLocalSettingMutable('loadingIndicatorStyle');
+    const [loadingIndicatorSpeed, setLoadingIndicatorSpeed] = useLocalSettingMutable('loadingIndicatorSpeed');
+    const [loadingIndicatorPause, setLoadingIndicatorPause] = useLocalSettingMutable('loadingIndicatorPause');
     const [uiMultiPanePanelsEnabled, setUiMultiPanePanelsEnabled] = useLocalSettingMutable('uiMultiPanePanelsEnabled');
     const [uiBackdropBlurEnabled, setUiBackdropBlurEnabled] = useLocalSettingMutable('uiBackdropBlurEnabled');
     const [hideConnectedAccountIdentities, setHideConnectedAccountIdentities] = useLocalSettingMutable('hideConnectedAccountIdentities');
@@ -206,6 +213,16 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
         }));
     }, []);
 
+    const loadingIndicatorSpeedChoices = React.useMemo(() => HAPPIER_SPINNER_SPEED_IDS.map((id) => ({
+        id,
+        label: t(`settingsAppearance.loadingIndicatorSpeedOptions.${id}`),
+    })), []);
+
+    const loadingIndicatorPauseChoices = React.useMemo(() => HAPPIER_SPINNER_PAUSE_IDS.map((id) => ({
+        id,
+        label: t(`settingsAppearance.loadingIndicatorPauseOptions.${id}`),
+    })), []);
+
     const itemDensityMenuItems = React.useMemo(() => {
         return [
             {
@@ -288,6 +305,9 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
     // Ensure we have a valid style for display, defaulting to gradient for unknown values
     const displayStyle: KnownAvatarStyle = isKnownAvatarStyle(avatarStyle) ? avatarStyle : 'gradient';
     const displayLoadingIndicatorStyle = normalizeHappierSpinnerStyleId(loadingIndicatorStyle);
+    // A timing choice the chosen style ignores stays visible but disabled, and says why once: the
+    // Classic Ring's note on Speed also covers the Pause row beneath it.
+    const loadingIndicatorTiming = happierSpinnerStyleTimingControls(displayLoadingIndicatorStyle);
     
     // Language display
     const getLanguageDisplayText = () => {
@@ -630,6 +650,34 @@ export const WorkspaceRouteBody = React.memo(function AppearanceSettingsScreen()
                     }
                     showChevron={false}
                 />
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.loadingIndicatorSpeed}>
+                    <SegmentedChoiceItem<HappierSpinnerSpeedId>
+                        title={t(APPEARANCE_SETTINGS.settings.loadingIndicatorSpeed.titleKey)}
+                        subtitle={loadingIndicatorTiming.speed
+                            ? t('settingsAppearance.loadingIndicatorSpeedDescription')
+                            : t('settingsAppearance.loadingIndicatorSpeedUnavailable')}
+                        subtitleLines={0}
+                        testIDPrefix="settings-appearance-loadingIndicatorSpeed"
+                        options={loadingIndicatorSpeedChoices}
+                        value={loadingIndicatorSpeed}
+                        onChange={setLoadingIndicatorSpeed}
+                        disabled={!loadingIndicatorTiming.speed}
+                    />
+                </SettingAnchor>
+                <SettingAnchor setting={APPEARANCE_SETTINGS.settings.loadingIndicatorPause}>
+                    <SegmentedChoiceItem<HappierSpinnerPauseId>
+                        title={t(APPEARANCE_SETTINGS.settings.loadingIndicatorPause.titleKey)}
+                        subtitle={loadingIndicatorTiming.pause || !loadingIndicatorTiming.speed
+                            ? t('settingsAppearance.loadingIndicatorPauseDescription')
+                            : t('settingsAppearance.loadingIndicatorPauseUnavailable')}
+                        subtitleLines={0}
+                        testIDPrefix="settings-appearance-loadingIndicatorPause"
+                        options={loadingIndicatorPauseChoices}
+                        value={loadingIndicatorPause}
+                        onChange={setLoadingIndicatorPause}
+                        disabled={!loadingIndicatorTiming.pause}
+                    />
+                </SettingAnchor>
             </ItemGroup>
 
             {/* Tab bar (phones and tablets) */}

@@ -120,7 +120,7 @@ describe('ActivitySpinner (web)', () => {
 
         const stripStyle = flattenStyle(strip?.props.style);
         expect(stripStyle.animationName).toBe('happierActivitySpinnerFilmstrip');
-        expect(stripStyle.animationDuration).toBe('1300ms');
+        expect(stripStyle.animationDuration).toBe('1004ms');
         expect(frameSheetFor(strip)).toContain('fill="red"');
     });
 
@@ -137,7 +137,27 @@ describe('ActivitySpinner (web)', () => {
         localSettingValues.loadingIndicatorStyle = 'retiredStyle';
         const { strip } = await renderSpinner({ size: 16 });
 
-        expect(flattenStyle(strip?.props.style).animationDuration).toBe('1300ms');
+        expect(flattenStyle(strip?.props.style).animationDuration).toBe('1004ms');
+    });
+
+    it('plays at the speed and pause chosen in settings, and previews follow them', async () => {
+        localSettingValues.loadingIndicatorSpeed = 'fast';
+        localSettingValues.loadingIndicatorPause = 'long';
+        const wave = await renderSpinner({ size: 16 });
+        // 804 ms of motion at 1.5×, then the 500 ms pause.
+        expect(flattenStyle(wave.strip?.props.style).animationDuration).toBe('1036ms');
+
+        // A continuous style takes the speed but has no pause to lengthen.
+        const radar = await renderSpinner({ size: 16, variant: 'radar' });
+        expect(flattenStyle(radar.strip?.props.style).animationDuration).toBe('733ms');
+    });
+
+    it('plays unknown stored speeds and pauses at the defaults', async () => {
+        localSettingValues.loadingIndicatorSpeed = 'warp';
+        localSettingValues.loadingIndicatorPause = 'forever';
+        const { strip } = await renderSpinner({ size: 16 });
+
+        expect(flattenStyle(strip?.props.style).animationDuration).toBe('1004ms');
     });
 
     it('colors aurora with the theme accents, but an explicit color wins so the mark stays legible on tinted buttons', async () => {

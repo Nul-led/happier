@@ -13,14 +13,20 @@ import { DotSpinnerNative } from './DotSpinnerNative.js';
 import { DotSpinnerWeb } from './DotSpinnerWeb.js';
 import type { DotSpinnerInk } from './dotSpinnerFrames.js';
 import { HAPPIER_SPINNER_SPIN_ANIMATION, useHappierSpinnerKeyframes } from './spinnerKeyframes.js';
-import { normalizeHappierSpinnerStyleId, type DotSpinnerStyleId } from './spinnerStyles.js';
+import {
+  normalizeHappierSpinnerStyleId,
+  normalizeHappierSpinnerTiming,
+  type DotSpinnerStyleId,
+  type HappierSpinnerPauseId,
+  type HappierSpinnerSpeedId,
+} from './spinnerStyles.js';
 
 /**
  * The single implementation owner for Happier's activity spinner (UI-T27).
  *
- * The default mark is the H of Happier drawn in dots with light moving through it; the style is
- * chosen by the host (Happier core reads its Settings → Appearance choice; plugin surfaces draw the
- * default wave). The original rotating ring stays available as the `classicRing` style: on web a
+ * The default mark is the H of Happier drawn in dots with light moving through it; the style, its
+ * speed and its pause between loops are chosen by the host (Happier core reads its Settings →
+ * Appearance choices; plugin surfaces draw the default wave at the default timing). The original rotating ring stays available as the `classicRing` style: on web a
  * CSS-transform ring (stepped below the small-spinner threshold), on native the platform indicator
  * with a still ring overlay on Android, whose platform widget hides when stopped.
  *
@@ -75,6 +81,10 @@ export type HappierDotSpinnerMotion = 'animate' | 'still' | 'breathe';
 
 export type HappierDotSpinnerModel = Readonly<{
   styleId: DotSpinnerStyleId;
+  /** Playback rate of the motion. */
+  speed: HappierSpinnerSpeedId;
+  /** Rest between loops; styles that loop continuously ignore it. */
+  pause: HappierSpinnerPauseId;
   size: number;
   motion: HappierDotSpinnerMotion;
   ink: DotSpinnerInk;
@@ -86,6 +96,10 @@ export type HappierSpinnerPresentationInput = HappierWebSpinnerPresentationInput
   defaultColor?: string;
   /** A stored style id; an id this build does not know draws the default wave. */
   indicatorStyle?: unknown;
+  /** A stored speed id; an unknown one plays at Normal. */
+  indicatorSpeed?: unknown;
+  /** A stored pause id; an unknown one rests for the default Short pause. */
+  indicatorPause?: unknown;
   /** Theme accents for `aurora`. Without them, or with an explicit colour, aurora draws one colour. */
   auroraAccents?: readonly [string, string, string];
 }>;
@@ -251,7 +265,8 @@ export function resolveHappierSpinnerPresentation(
   const ink: DotSpinnerInk = styleId === 'aurora' && color == null && auroraAccents
     ? { aurora: auroraAccents }
     : { color: resolvedColor ?? FALLBACK_DOT_INK };
-  return { kind: 'dots', accessibilityRole: 'progressbar', style, dots: { styleId, size, motion, ink } };
+  const { speed, pause } = normalizeHappierSpinnerTiming(input.indicatorSpeed, input.indicatorPause);
+  return { kind: 'dots', accessibilityRole: 'progressbar', style, dots: { styleId, speed, pause, size, motion, ink } };
 }
 
 /**
@@ -266,7 +281,8 @@ const FALLBACK_DOT_INK = 'gray';
  * host box and calls `useHappierSpinnerKeyframes` to install the web animation definitions.
  */
 export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerModel }>) {
-  const { styleId, size, motion, ink } = props.model;
+  const { styleId, speed, pause, size, motion, ink } = props.model;
+  const timing = useMemo(() => ({ speed, pause }), [pause, speed]);
   // A stable ink identity per value: the native dots build their animated graph from it, and a new
   // graph on every parent render would re-attach every dot to the native driver.
   const inkColor = 'color' in ink ? ink.color : null;
@@ -276,9 +292,9 @@ export function HappierDotSpinner(props: Readonly<{ model: HappierDotSpinnerMode
     [first, inkColor, second, third],
   );
   if (Platform.OS === 'web') {
-    return <DotSpinnerWeb styleId={styleId} ink={stableInk} motion={motion} />;
+    return <DotSpinnerWeb styleId={styleId} timing={timing} ink={stableInk} motion={motion} />;
   }
-  return <DotSpinnerNative styleId={styleId} size={size} ink={stableInk} motion={motion} />;
+  return <DotSpinnerNative styleId={styleId} timing={timing} size={size} ink={stableInk} motion={motion} />;
 }
 
 /**

@@ -68,7 +68,7 @@ describe('shared spinner presentation (dot styles)', () => {
     if (presentation?.kind !== 'dots') throw new Error('expected dots');
     expect(presentation.accessibilityRole).toBe('progressbar');
     expect(presentation.style).toEqual({ width: 12, height: 12, alignSelf: 'center', overflow: 'hidden' });
-    expect(presentation.dots).toEqual({ styleId: 'wave', size: 12, motion: 'animate', ink: { color: 'theme-secondary' } });
+    expect(presentation.dots).toEqual({ styleId: 'wave', speed: 'normal', pause: 'short', size: 12, motion: 'animate', ink: { color: 'theme-secondary' } });
   });
 
   it('draws the chosen style, and the wave for an id it does not know', () => {
@@ -185,9 +185,9 @@ describe('HappierSpinner on web (dot styles)', () => {
     expect(strips[0]!.getAttribute('data-happier-activity-spinner')).toBe(strips[1]!.getAttribute('data-happier-activity-spinner'));
     expect(document.head.querySelectorAll('style[id^="happier-activity-spinner-"]')).toHaveLength(1);
     expect(strips[0]!.style.animationName).toBe('happierActivitySpinnerFilmstrip');
-    expect(strips[0]!.style.animationDuration).toBe('1300ms');
-    expect(strips[0]!.style.animationTimingFunction).toBe('steps(39, end)');
-    expect(strips[0]!.style.width).toBe('3900%');
+    expect(strips[0]!.style.animationDuration).toBe('1004ms');
+    expect(strips[0]!.style.animationTimingFunction).toBe('steps(30, end)');
+    expect(strips[0]!.style.width).toBe('3000%');
     expect(frameSheetFor(strips[0]!)).toContain('fill="red"');
   });
 

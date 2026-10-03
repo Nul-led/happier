@@ -7,7 +7,7 @@ import {
   type DotSpinnerInk,
 } from './dotSpinnerFrames.js';
 import { HAPPIER_SPINNER_BREATH_ANIMATION, HAPPIER_SPINNER_FILMSTRIP_ANIMATION } from './spinnerKeyframes.js';
-import type { DotSpinnerStyleId } from './spinnerStyles.js';
+import type { DotSpinnerStyleId, HappierSpinnerTiming } from './spinnerStyles.js';
 
 const FILMSTRIP_ANIMATION_NAME = HAPPIER_SPINNER_FILMSTRIP_ANIMATION;
 const BREATH_ANIMATION_NAME = HAPPIER_SPINNER_BREATH_ANIMATION;
@@ -17,7 +17,7 @@ const useInsertionEffectSafe: typeof React.useEffect =
   typeof React.useInsertionEffect === 'function' ? React.useInsertionEffect : React.useLayoutEffect;
 
 /**
- * One `<style>` rule per style × ink × pose, shared by every copy on the page. The frame sheet is a
+ * One `<style>` rule per style × timing × ink × pose, shared by every copy on the page. The frame sheet is a
  * ≈20 KB SVG; putting it in each spinner's inline style would copy it into every DOM node. The
  * document itself is the registry (an id lookup), so a sheet removed from the page is re-added by the
  * next spinner that needs it, and the SVG is only built when it is missing.
@@ -52,14 +52,16 @@ function alignToDocumentClock(element: HTMLElement | null): void {
  */
 export function DotSpinnerWeb(props: Readonly<{
   styleId: DotSpinnerStyleId;
+  timing: HappierSpinnerTiming;
   ink: DotSpinnerInk;
   motion: 'animate' | 'still' | 'breathe';
 }>) {
-  const { styleId, ink, motion } = props;
-  const frames = getDotSpinnerFrames(styleId);
+  const { styleId, timing, ink, motion } = props;
+  const frames = getDotSpinnerFrames(styleId, timing);
   const animate = motion === 'animate';
   const inkKey = encodeURIComponent(JSON.stringify('color' in ink ? { color: ink.color } : { aurora: ink.aurora }));
-  const key = `${styleId}-${animate ? 'strip' : 'still'}-${inkKey}`;
+  // The strip's frames depend on the timing; the still pose does not.
+  const key = `${animate ? frames.key : styleId}-${animate ? 'strip' : 'still'}-${inkKey}`;
   const stripRef = React.useRef<HTMLSpanElement | null>(null);
 
   useInsertionEffectSafe(() => {

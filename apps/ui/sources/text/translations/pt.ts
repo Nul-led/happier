@@ -5794,6 +5794,22 @@ export const pt = {
       aurora: "Aurora",
       classicRing: "Anel clássico",
     },
+    loadingIndicatorSpeed: "Velocidade",
+    loadingIndicatorSpeedDescription: "A rapidez com que a luz percorre os pontos",
+    loadingIndicatorSpeedOptions: {
+      slow: "Lenta",
+      normal: "Normal",
+      fast: "Rápida",
+    },
+    loadingIndicatorPause: "Pausa",
+    loadingIndicatorPauseDescription: "Quanto tempo os pontos descansam antes de cada ciclo",
+    loadingIndicatorPauseOptions: {
+      none: "Nenhuma",
+      short: "Curta",
+      long: "Longa",
+    },
+    loadingIndicatorPauseUnavailable: "Este estilo repete sem descanso.",
+    loadingIndicatorSpeedUnavailable: "O anel clássico gira no seu próprio ritmo fixo.",
     avatarStyle: "Estilo do avatar",
     avatarStyleDescription: "Escolha a aparência do avatar da sessão",
     avatarOptions: {

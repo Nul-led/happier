@@ -11,7 +11,7 @@ import {
   type DotSpinnerFrames,
   type DotSpinnerInk,
 } from './dotSpinnerFrames.js';
-import { H_DOTS, type DotSpinnerStyleId, type HDot } from './spinnerStyles.js';
+import { H_DOTS, type DotSpinnerStyleId, type HappierSpinnerTiming, type HDot } from './spinnerStyles.js';
 
 const BREATH_LOW_OPACITY = 0.45;
 
@@ -65,18 +65,19 @@ function driveDots(
 
 /**
  * The native dots. Every dot is an `Animated.View` whose opacity (and aurora colour) is an
- * interpolation of the style's shared cycle clock over the 30 fps frame table, so the whole
+ * interpolation of the shared clock for its played cycle over the 30 fps frame table, so the whole
  * animation runs on the native driver with no per-frame JavaScript. Still and breathing poses hold
  * no cycle clock; the breath holds the one shared breath clock.
  */
 export const DotSpinnerNative = memo(function DotSpinnerNative(props: Readonly<{
   styleId: DotSpinnerStyleId;
+  timing: HappierSpinnerTiming;
   size: number;
   ink: DotSpinnerInk;
   motion: 'animate' | 'still' | 'breathe';
 }>) {
-  const { styleId, size, ink, motion } = props;
-  const frames = getDotSpinnerFrames(styleId);
+  const { styleId, timing, size, ink, motion } = props;
+  const frames = getDotSpinnerFrames(styleId, timing);
   const animate = motion === 'animate';
   const clock = useDotSpinnerCycleClock(frames.cycleMs, animate);
   const breath = useDotSpinnerBreathClock(motion === 'breathe');

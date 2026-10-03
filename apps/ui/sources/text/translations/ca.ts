@@ -5067,6 +5067,22 @@ export const ca = {
             aurora: "Aurora",
             classicRing: "Anell clàssic",
         },
+        loadingIndicatorSpeed: "Velocitat",
+        loadingIndicatorSpeedDescription: "Com de ràpid recorre la llum els punts",
+        loadingIndicatorSpeedOptions: {
+            slow: "Lenta",
+            normal: "Normal",
+            fast: "Ràpida",
+        },
+        loadingIndicatorPause: "Pausa",
+        loadingIndicatorPauseDescription: "Quant de temps reposen els punts abans de cada cicle",
+        loadingIndicatorPauseOptions: {
+            none: "Cap",
+            short: "Curta",
+            long: "Llarga",
+        },
+        loadingIndicatorPauseUnavailable: "Aquest estil es repeteix sense descans.",
+        loadingIndicatorSpeedUnavailable: "L'anell clàssic gira al seu propi ritme fix.",
         avatarStyle: 'Estil d\'avatar',
         avatarStyleDescription: 'Tria l\'aparença de l\'avatar de la sessió',
         avatarOptions: {

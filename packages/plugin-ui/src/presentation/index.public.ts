@@ -218,10 +218,17 @@ export {
 } from './feedback/Spinner.js';
 export { useHappierSpinnerKeyframes } from './feedback/spinnerKeyframes.js';
 export {
+  DEFAULT_HAPPIER_SPINNER_PAUSE_ID,
+  DEFAULT_HAPPIER_SPINNER_SPEED_ID,
   DEFAULT_HAPPIER_SPINNER_STYLE_ID,
+  HAPPIER_SPINNER_PAUSE_IDS,
+  HAPPIER_SPINNER_SPEED_IDS,
   HAPPIER_SPINNER_STYLE_IDS,
+  happierSpinnerStyleTimingControls,
   isHappierSpinnerStyleId,
   normalizeHappierSpinnerStyleId,
+  type HappierSpinnerPauseId,
+  type HappierSpinnerSpeedId,
   type HappierSpinnerStyleId,
 } from './feedback/spinnerStyles.js';
 export {

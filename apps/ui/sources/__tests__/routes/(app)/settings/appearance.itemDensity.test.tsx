@@ -177,6 +177,50 @@ describe('Appearance settings item density', () => {
         delete shared.settingsState.loadingIndicatorStyle;
     });
 
+    it('chooses the loading indicator speed and pause beside the style and stores them on this device', async () => {
+        const mod = await import('@/app/(app)/settings/appearance');
+        const screen = await renderSettingsView(React.createElement(mod.default));
+
+        const speed = screen.findByProps({ testIDPrefix: 'settings-appearance-loadingIndicatorSpeed' });
+        const pause = screen.findByProps({ testIDPrefix: 'settings-appearance-loadingIndicatorPause' });
+        expect(speed.props.value).toBe('normal');
+        expect(speed.props.options.map((option: { id: string }) => option.id)).toEqual(['slow', 'normal', 'fast']);
+        expect(pause.props.value).toBe('short');
+        expect(pause.props.options.map((option: { id: string }) => option.id)).toEqual(['none', 'short', 'long']);
+        expect(speed.props.disabled).toBeFalsy();
+        expect(pause.props.disabled).toBeFalsy();
+
+        await act(async () => { speed.props.onChange('fast'); });
+        await act(async () => { pause.props.onChange('long'); });
+        expect(shared.settingsState.loadingIndicatorSpeed).toBe('fast');
+        expect(shared.settingsState.loadingIndicatorPause).toBe('long');
+        delete shared.settingsState.loadingIndicatorSpeed;
+        delete shared.settingsState.loadingIndicatorPause;
+    });
+
+    it.each([
+        ['radar', { speed: false, pause: true }],
+        ['classicRing', { speed: true, pause: true }],
+    ] as const)('says when the %s style ignores a timing choice instead of offering it', async (styleId, disabled) => {
+        shared.settingsState.loadingIndicatorStyle = styleId;
+        try {
+            const mod = await import('@/app/(app)/settings/appearance');
+            const screen = await renderSettingsView(React.createElement(mod.default));
+
+            const speed = screen.findByProps({ testIDPrefix: 'settings-appearance-loadingIndicatorSpeed' });
+            const pause = screen.findByProps({ testIDPrefix: 'settings-appearance-loadingIndicatorPause' });
+            expect(Boolean(speed.props.disabled)).toBe(disabled.speed);
+            expect(Boolean(pause.props.disabled)).toBe(disabled.pause);
+            // One reason per state: the ring's note sits on Speed and covers Pause too.
+            const reasons = [speed.props.subtitle, pause.props.subtitle];
+            expect(reasons).toEqual(styleId === 'classicRing'
+                ? ['settingsAppearance.loadingIndicatorSpeedUnavailable', 'settingsAppearance.loadingIndicatorPauseDescription']
+                : ['settingsAppearance.loadingIndicatorSpeedDescription', 'settingsAppearance.loadingIndicatorPauseUnavailable']);
+        } finally {
+            delete shared.settingsState.loadingIndicatorStyle;
+        }
+    });
+
     it('keeps the loading indicator previews out of the accessibility tree, since the option title already names the style', async () => {
         const { LoadingIndicatorStylePreview } = await import('@/components/settings/appearance/LoadingIndicatorStylePreview');
         const screen = await renderSettingsView(React.createElement(LoadingIndicatorStylePreview, { styleId: 'radar' }));

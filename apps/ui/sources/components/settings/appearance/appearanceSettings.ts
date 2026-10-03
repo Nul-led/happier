@@ -72,6 +72,8 @@ export const APPEARANCE_SETTINGS = defineSettingsPage({
             titleKey: 'settingsAppearance.loadingIndicator',
             settings: {
                 loadingIndicatorStyle: { titleKey: 'settingsAppearance.loadingIndicatorStyle', descriptionKey: 'settingsAppearance.loadingIndicatorDescription', storage: { scope: 'local', key: 'loadingIndicatorStyle', access: 'read_write' } },
+                loadingIndicatorSpeed: { titleKey: 'settingsAppearance.loadingIndicatorSpeed', descriptionKey: 'settingsAppearance.loadingIndicatorSpeedDescription', storage: { scope: 'local', key: 'loadingIndicatorSpeed', access: 'read_write' } },
+                loadingIndicatorPause: { titleKey: 'settingsAppearance.loadingIndicatorPause', descriptionKey: 'settingsAppearance.loadingIndicatorPauseDescription', storage: { scope: 'local', key: 'loadingIndicatorPause', access: 'read_write' } },
             },
         },
         privacy: {
