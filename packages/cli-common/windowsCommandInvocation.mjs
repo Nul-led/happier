@@ -81,7 +81,7 @@ export function resolveWindowsCommandPath(commandPath, env = process.env) {
   }
   return null;
 }
-export function resolveWindowsCommandOnPath(command, env = process.env) {
+export function resolveWindowsCommandOnPath(command, env = process.env, accept = () => true) {
   const cmd = asNonEmptyString(command);
   if (!cmd)
     return null;
@@ -96,7 +96,7 @@ export function resolveWindowsCommandOnPath(command, env = process.env) {
     for (const name of candidates) {
       const full = join(trimmedDir, name);
       try {
-        if (existsSync(full))
+        if (existsSync(full) && accept(full))
           return full;
       }
       catch {

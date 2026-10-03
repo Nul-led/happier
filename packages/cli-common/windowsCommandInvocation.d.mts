@@ -8,6 +8,7 @@ export function resolveWindowsCommandPath(commandPath: string, env?: NodeJS.Proc
 export function resolveWindowsCommandOnPath(
   command: string,
   env?: NodeJS.ProcessEnv,
+  accept?: (candidate: string) => boolean,
 ): string | null;
 export function buildWindowsCmdShimInvocation(
   command: string,
