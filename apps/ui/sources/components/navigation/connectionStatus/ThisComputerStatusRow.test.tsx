@@ -3,7 +3,7 @@ import renderer from 'react-test-renderer';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { SystemTaskRunner, SystemTaskBridge } from '@/components/systemTasks/types';
+import type { SystemTaskRunner, SystemTaskBridge, SystemTaskBridgeListenerSet } from '@/components/systemTasks/types';
 import { renderScreen } from '@/dev/testkit';
 import { installServerSettingsHooksCommonModuleMocks } from '@/components/settings/server/hooks/serverSettingsHooksTestHelpers';
 
@@ -11,9 +11,16 @@ const state = vi.hoisted(() => ({
     activeServerSnapshot: { serverId: 'relay-b', serverUrl: 'https://relay-b.example.test', generation: 1 },
     runner: null as SystemTaskRunner | null,
     setupSpecs: [] as unknown[],
+    setupListeners: null as SystemTaskBridgeListenerSet | null,
 }));
 
 installServerSettingsHooksCommonModuleMocks({
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        const mock = createModalModuleMock();
+        mock.spies.alertAsync.mockImplementation(async (_title, _body, buttons) => { buttons?.at(-1)?.onPress?.(); });
+        return mock.module;
+    },
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({
@@ -33,11 +40,6 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
 vi.mock('@/components/systemTasks/systemTasksRuntime', () => ({
     getSystemTasksRunner: () => state.runner,
 }));
-
-vi.mock('@/components/systemTasks', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/components/systemTasks')>();
-    return { ...actual, getDefaultSystemTaskRunner: () => state.runner };
-});
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => state.activeServerSnapshot,
@@ -118,6 +120,7 @@ async function installBridge(statusData: unknown): Promise<void> {
             if (taskId === 'task_status') {
                 queueMicrotask(() => listenerSet.onResult({ protocolVersion: 1, taskId, ok: true, data: statusData as never }));
             }
+            if (taskId === 'task_setup') state.setupListeners = listenerSet;
             return () => {};
         },
         async cancel() {},
@@ -150,6 +153,7 @@ describe('ThisComputerStatusRow', () => {
         vi.resetModules();
         state.activeServerSnapshot = { serverId: 'relay-b', serverUrl: 'https://relay-b.example.test', generation: 1 };
         state.setupSpecs = [];
+        state.setupListeners = null;
     });
 
     it('lists every relay this computer serves and offers nothing when it serves the app relay', async () => {
@@ -170,6 +174,20 @@ describe('ThisComputerStatusRow', () => {
         expect(relayStates(screen)).toEqual(['relay-a.example.test|connectionStatus.thisComputerRelayConnected']);
         expect(screen.getTextContent()).toContain('server.relayDrift.connectHereAction');
         expect(screen.findAllHostsByTestId('connection-popover-connect-this-computer').length).toBeGreaterThan(0);
+    });
+    it('shows working progress and a settled Connect failure with retry still available', async () => {
+        await installBridge(statusResult(daemonOn('https://relay-a.example.test', 'default-following'), []));
+        const screen = await renderRow();
+        await renderer.act(async () => {
+            screen.findAllHostsByTestId('connection-popover-connect-this-computer')[0].props.onPress();
+        });
+        expect(screen.getTextContent()).toContain('common.loading');
+        expect(screen.findAllHostsByTestId('system-task-progress-card').length).toBeGreaterThan(0);
+        await renderer.act(async () => {
+            state.setupListeners?.onResult({ protocolVersion: 1, taskId: 'task_setup', ok: false, error: { code: 'setup_failed', message: 'Background service could not start' } });
+        });
+        expect(screen.getTextContent()).toContain('Background service could not start');
+        expect(screen.findAllHostsByTestId('connection-popover-connect-this-computer')[0].props.disabled).not.toBe(true);
     });
     it('never calls a stopped daemon connected: it is set up for its relay and offline (M4)', async () => {
         await installBridge(statusResult(daemonOn('https://relay-a.example.test', 'default-following'), [daemonOn('https://relay-b.example.test', 'pinned', { running: false })]));

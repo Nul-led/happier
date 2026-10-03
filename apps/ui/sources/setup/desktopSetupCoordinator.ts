@@ -1,4 +1,4 @@
-import type { SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
+import type { SystemTaskEvent, SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { buildLocalMachineSetupSystemTaskSpec, type LocalMachineSetupTarget } from '@/components/systemTasks/buildLocalMachineSetupSystemTaskSpec';
@@ -68,6 +68,14 @@ export type DesktopSetupStartOutcome = Readonly<{
     taskId: string;
 }>;
 
+/** One in-memory operation, retained by the shell's coordinator while its views come and go. */
+export type DesktopSetupRun = Readonly<{
+    taskId: string | null;
+    runner: SystemTaskRunner;
+    spec: SystemTaskSpec;
+    movesRelay: boolean;
+}>;
+
 /**
  * Why `verifyCurrentTarget()` could not prove this computer ready. Exactly two ways to fail, both
  * named: the re-read runtime does not describe a converged daemon for this relay and account
@@ -89,6 +97,16 @@ export type DesktopSetupVerificationOutcome =
 export type DesktopSetupObservedExpectation = DesktopSetupExpectation & Readonly<{ serverId: string }>;
 
 export type DesktopSetupCoordinator = Readonly<{
+    readSetupRun: () => DesktopSetupRun | null;
+    /** Opaque existing request/spec reference, stable before and after native task allocation. */
+    readSetupOperation: () => object | null;
+    readSetupStarting: () => boolean;
+    readSetupStartError: () => string | null;
+    launchSetupTask: (params: Readonly<{
+        runner: SystemTaskRunner;
+        spec: SystemTaskSpec;
+        onEvent: (event: SystemTaskEvent) => void;
+    }>) => Promise<string>;
     /**
      * The one ambient inspection. `fresh: true` is only for the post-setup proof (INV8): the
      * executor just changed the runtime, so the app re-reads instead of trusting task success.
@@ -506,15 +524,47 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
     let snapshot: DesktopLocalInspection = PENDING_INSPECTION;
     let refreshing = false;
     let inspectionTaskId: string | null = null;
-    /** The one setup run this app open last launched, and whether it moves this computer. */
-    let launchedRun: Readonly<{ taskId: string; movesRelay: boolean }> | null = null;
     /** F5 — `startSetup`/`reconcile` calls between their start and the run they launch (or none). */
     let launching = 0;
+    let setupRun: DesktopSetupRun | null = null;
+    let setupStartError: string | null = null;
+    let setupRequest: Promise<DesktopSetupStartOutcome | null> | null = null;
+    let setupOperation: object | null = null;
     const listeners = new Set<() => void>();
 
     const notify = (): void => {
         for (const listener of Array.from(listeners)) {
             listener();
+        }
+    };
+
+    const launchSetupTask: DesktopSetupCoordinator['launchSetupTask'] = async ({ runner, spec, onEvent }) => {
+        launching += 1;
+        setupStartError = null;
+        if (!setupRequest) setupOperation = spec;
+        setupRun = { runner, spec, taskId: null, movesRelay: false };
+        notify();
+        try {
+            const taskId = await runner.start(spec);
+            setupRun = { runner, spec, taskId, movesRelay: false };
+            // This subscription belongs to the operation, not its initiating route. Replay also
+            // answers a prompt emitted between native start and the retained subscription.
+            let unsubscribe: (() => void) | null = null;
+            let settled = false;
+            unsubscribe = runner.subscribe(taskId, onEvent, () => {
+                settled = true;
+                unsubscribe?.();
+                notify();
+            });
+            if (settled) unsubscribe();
+            notify();
+            return taskId;
+        } catch (error) {
+            setupStartError = error instanceof Error ? error.message : 'system_task_start_failed';
+            throw error;
+        } finally {
+            launching -= 1;
+            notify();
         }
     };
 
@@ -654,15 +704,17 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
         ambient: DesktopLocalInspection,
     ): Promise<DesktopSetupStartOutcome> => {
         // A pinned run gives the relay its own service; it moves nothing.
-        const movesRelay = target.serviceTargetMode !== 'pinned' && daemonMovesToAnotherRelay({
+        const movesRelay = target.cliOnly !== true && target.serviceTargetMode !== 'pinned' && daemonMovesToAnotherRelay({
             inspection: ambient,
             target: { relayUrl: target.activeRelayUrl, localRelayUrl: target.activeLocalRelayUrl, accountId: target.expectedAccountId },
         });
-        const taskId = await params.start(buildLocalMachineSetupSystemTaskSpec({
+        const spec = buildLocalMachineSetupSystemTaskSpec({
             ...target,
             ...(params.reconsiderCli ? { reconsiderCli: true } : {}),
-        }));
-        launchedRun = { taskId, movesRelay };
+        });
+        const taskId = await params.start(spec);
+        setupRun = { runner: setupRun?.taskId === taskId ? setupRun.runner : deps.runner(), spec, taskId, movesRelay };
+        notify();
         return { taskId };
     };
 
@@ -687,11 +739,24 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
         };
     };
 
-    const trackLaunch = <T>(run: () => Promise<T>): Promise<T> => {
+    const trackLaunch = (run: () => Promise<DesktopSetupStartOutcome | null>): Promise<DesktopSetupStartOutcome | null> => {
+        if (setupRequest) return setupRequest;
+        const active = setupRun?.taskId ? setupRun.runner.getSnapshot(setupRun.taskId) : null;
+        if (active && !active.result) return Promise.resolve({ taskId: active.taskId });
         launching += 1;
-        return run().finally(() => {
+        setupStartError = null;
+        notify();
+        setupRequest = run().catch((error: unknown) => {
+            setupStartError = error instanceof Error ? error.message : 'system_task_start_failed';
+            throw error;
+        }).finally(() => {
             launching -= 1;
+            setupRequest = null;
+            notify();
         });
+        setupOperation = setupRequest;
+        notify();
+        return setupRequest;
     };
 
     const startSetupUntracked: DesktopSetupCoordinator['startSetup'] = async (params) => {
@@ -710,6 +775,11 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
         });
         // H2 — the relay's own service here was set up by the user: nothing of the app's to converge.
         if (decision === 'leave_user_service') {
+            // The CLI choice belongs to the home, independent of who owns this relay's service.
+            // The same executor handles it before any relay/auth/service convergence.
+            if (params.reconsiderCli) {
+                return await launch(params, { ...target, cliOnly: true }, ambient);
+            }
             return null;
         }
         // An explicit request is the relay answer for a first setup; it is not an answer to taking
@@ -728,8 +798,9 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
     const startSetup: DesktopSetupCoordinator['startSetup'] = (params) => trackLaunch(() => startSetupUntracked(params));
 
     const reconcileUntracked: DesktopSetupCoordinator['reconcile'] = async (params) => {
-        const ambient = await readAmbient();
+        const setupTarget = resolveDesktopSetupTarget();
         const target = readCurrentExpectation();
+        const ambient = await readAmbient();
         if (keptBackgroundServiceApplies({ inspection: ambient, target, kept: readKeptBackgroundService() })) {
             return null;
         }
@@ -748,12 +819,17 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
         if (serviceTargetMode === null) {
             return null;
         }
-        return await launch(params, { ...resolveDesktopSetupTarget(), ...runPlacement(decision, ambient, target, serviceTargetMode) }, ambient);
+        return await launch(params, { ...setupTarget, ...runPlacement(decision, ambient, target, serviceTargetMode) }, ambient);
     };
 
     const reconcile: DesktopSetupCoordinator['reconcile'] = (params) => trackLaunch(() => reconcileUntracked(params));
 
     return {
+        readSetupRun: () => setupRun,
+        readSetupOperation: () => setupOperation,
+        readSetupStarting: () => launching > 0,
+        readSetupStartError: () => setupStartError,
+        launchSetupTask,
         inspect,
         subscribe: (listener) => {
             listeners.add(listener);
@@ -772,9 +848,9 @@ export function createDesktopSetupCoordinator(deps: Readonly<{
         verifyCurrentTarget,
         startSetup,
         reconcile,
-        readLaunchedRunMovesRelay: (taskId) => launchedRun !== null && taskId !== null && launchedRun.taskId === taskId && launchedRun.movesRelay,
+        readLaunchedRunMovesRelay: (taskId) => setupRun !== null && taskId !== null && setupRun.taskId === taskId && setupRun.movesRelay,
         isSetupActive: () => launching > 0
-            || (launchedRun !== null && deps.runner().getSnapshot(launchedRun.taskId)?.result == null),
+            || (setupRun?.taskId != null && setupRun.runner.getSnapshot(setupRun.taskId)?.result == null),
     };
 }
 

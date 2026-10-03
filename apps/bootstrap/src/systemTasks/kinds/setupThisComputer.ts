@@ -71,6 +71,8 @@ export type SetupThisComputerParams = Readonly<{
    * even though this computer already answered it.
    */
   reconsiderCli?: boolean;
+  /** Change this home's CLI choice without converging a relay's user-owned service. */
+  cliOnly?: boolean;
   /**
    * Which of this computer's services serves the app's relay (`SetupServiceTargetMode`). Absent is
    * `default-following`: the released contract, which selects the relay for this Happier home.
@@ -101,7 +103,8 @@ export type ServiceLifecycleObservation = Pick<DaemonStatusSnapshot, 'serviceIns
  * repaired — through the `cli.pathExposure.*` tasks that own it.
  */
 export type SetupThisComputerResult = Readonly<{
-  machineId: string;
+  /** A CLI-only choice does not pair or establish a machine identity. */
+  machineId: string | null;
   cliProvenance: LocalFirstPartyCommandProvenance;
   cliVersion: string;
   relayChanged: boolean;
@@ -109,8 +112,9 @@ export type SetupThisComputerResult = Readonly<{
   /**
    * The lifecycle action the executor selected (E3). A consented replace/takeover apply may also
    * have run beside it — that is the CLI's convergence command, not a lifecycle decision.
+   * `none` means this run changed only the home's CLI choice.
    */
-  serviceAction: SetupThisComputerServiceAction;
+  serviceAction: SetupThisComputerServiceAction | 'none';
 }>;
 
 type PathExposureOutcome = Readonly<{
@@ -336,6 +340,25 @@ export function createSetupThisComputerKind(
       ctx.emit({ type: 'progress', stepId: STEP.ensureCli, message: 'Preparing the Happier command line' });
       const cli = await deps.ensureCli({ releaseRing: ring, signal: ctx.signal, onProgress: reportCliAcquisitionProgress(ctx.emit) });
       throwIfCancelled(ctx.signal);
+
+      if (params.cliOnly) {
+        // The Settings choice belongs to this home even when the active relay is served by a
+        // user-owned pin. Reuse the choice/acquisition/PATH owners above, then stop before any
+        // relay, credentials or service convergence. PATH keeps its existing ancillary timing.
+        const pathExposure = cli.provenance === 'managed'
+          ? observePathExposure(deps.ensurePathExposure({ releaseRing: ring }))
+          : null;
+        emitPathExposureFailure(ctx, pathExposure);
+        throwIfCancelled(ctx.signal);
+        return {
+          machineId: null,
+          cliProvenance: cli.provenance,
+          cliVersion: cli.version,
+          relayChanged: false,
+          credentialsChanged: false,
+          serviceAction: 'none',
+        };
+      }
 
       const relayTarget: RelayProfileTarget = {
         serverUrl: params.activeRelayUrl,
@@ -623,14 +646,7 @@ export function createSetupThisComputerKind(
       // not report success.
       throwIfCancelled(ctx.signal);
 
-      const pathExposureFailure = pathExposure?.readFailure() ?? null;
-      if (pathExposureFailure) {
-        ctx.emit({
-          type: 'progress',
-          stepId: STEP.pathExposure,
-          message: `Could not add happier to your PATH: ${pathExposureFailure}`,
-        });
-      }
+      emitPathExposureFailure(ctx, pathExposure);
 
       return {
         machineId,
@@ -687,6 +703,13 @@ function observePathExposure(exposure: Promise<PathExposureOutcome>): SettledPat
     },
   );
   return { readFailure: () => failure };
+}
+
+function emitPathExposureFailure(ctx: InteractiveSystemTaskContext, exposure: SettledPathExposure | null): void {
+  const failure = exposure?.readFailure() ?? null;
+  if (failure) {
+    ctx.emit({ type: 'progress', stepId: STEP.pathExposure, message: `Could not add happier to your PATH: ${failure}` });
+  }
 }
 
 /**
@@ -752,6 +775,12 @@ export function parseSetupThisComputerParams(params: unknown): SetupThisComputer
   if (record.reconsiderCli !== undefined && typeof record.reconsiderCli !== 'boolean') {
     throw new systemTasks.SystemTaskExecutionError('invalid_params', 'reconsiderCli must be a boolean when provided.');
   }
+  if (record.cliOnly !== undefined && typeof record.cliOnly !== 'boolean') {
+    throw new systemTasks.SystemTaskExecutionError('invalid_params', 'cliOnly must be a boolean when provided.');
+  }
+  if (record.cliOnly === true && record.reconsiderCli !== true) {
+    throw new systemTasks.SystemTaskExecutionError('invalid_params', 'cliOnly requires reconsiderCli.');
+  }
   const serviceTargetMode = record.serviceTargetMode;
   if (serviceTargetMode !== undefined && serviceTargetMode !== 'default-following' && serviceTargetMode !== 'pinned') {
     throw new systemTasks.SystemTaskExecutionError('invalid_params', 'serviceTargetMode must be default-following or pinned when provided.');
@@ -765,6 +794,7 @@ export function parseSetupThisComputerParams(params: unknown): SetupThisComputer
     expectedAccountId,
     ...(replaceAccountId ? { replaceAccountId } : {}),
     ...(record.reconsiderCli === true ? { reconsiderCli: true } : {}),
+    ...(record.cliOnly === true ? { cliOnly: true } : {}),
     ...(serviceTargetMode === 'pinned' ? { serviceTargetMode } : {}),
     ...(surface ? { surface } : {}),
   };

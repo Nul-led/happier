@@ -91,7 +91,7 @@ beforeEach(() => {
     mocks.serverFetch.mockReset();
     mocks.getCredentialsForServerUrl.mockReset();
     mocks.getCredentialsForServerUrl.mockResolvedValue({
-        token: 'app-token',
+        token: `header.${Buffer.from(JSON.stringify({ sub: ACCOUNT_ID })).toString('base64')}.signature`,
         encryption: {
             publicKey: encodeBase64(new Uint8Array(32).fill(1)),
             machineKey: encodeBase64(new Uint8Array(32).fill(9)),
@@ -110,6 +110,51 @@ afterEach(() => {
 });
 
 describe('useThisComputerSetupTask automatic approval (R4 / INV2, end to end)', () => {
+    it('retains the scoped run and answers the next prompt after navigation, then adopts it on reopen', async () => {
+        const bridge = createDeterministicSystemTaskBridge();
+        const respond = vi.spyOn(bridge, 'respond');
+        const runner = createSystemTaskRunner({ bridge, mode: 'dev' });
+        const options = {
+            runner,
+            authRequestApproval: { expectedRelayUrl: RELAY_URL, expectedAccountId: ACCOUNT_ID, serverId: SERVER_ID },
+        };
+        const initiating = await renderHook(() => useThisComputerSetupTask(options));
+        let taskId: string;
+        await act(async () => { taskId = await initiating.getCurrent().launch(buildSetupSpec()); });
+        await initiating.unmount();
+        await advance(2_000);
+
+        expect(respond).toHaveBeenCalledWith(taskId!, { approved: true });
+        expect(runner.getSnapshot(taskId!)?.status).toBe('succeeded');
+        const reopened = await renderHook(() => useThisComputerSetupTask(options));
+        expect(reopened.getCurrent().activeTaskId).toBe(taskId!);
+        expect(reopened.getCurrent().activeTaskSnapshot?.status).toBe('succeeded');
+        expect(respond).toHaveBeenCalledTimes(1);
+    });
+
+    it('retains a delayed launch after the initiating surface unmounts', async () => {
+        const bridge = createDeterministicSystemTaskBridge();
+        let finishStart!: () => void;
+        const started = new Promise<void>((resolve) => { finishStart = resolve; });
+        const runner = createSystemTaskRunner({ bridge: { ...bridge, start: async (spec) => {
+            await started;
+            return bridge.start(spec);
+        } }, mode: 'dev' });
+        const options = {
+            runner,
+            authRequestApproval: { expectedRelayUrl: RELAY_URL, expectedAccountId: ACCOUNT_ID, serverId: SERVER_ID },
+        };
+        const initiating = await renderHook(() => useThisComputerSetupTask(options));
+        let launch!: Promise<string>;
+        await act(async () => { launch = initiating.getCurrent().launch(buildSetupSpec()); });
+        await initiating.unmount();
+        await act(async () => { finishStart(); await launch; });
+        await advance(2_000);
+        const reopened = await renderHook(() => useThisComputerSetupTask(options));
+        expect(reopened.getCurrent().activeTaskId).toBe(await launch);
+        expect(reopened.getCurrent().activeTaskSnapshot?.status).toBe('succeeded');
+    });
+
     it('completes an unauthenticated-CLI setup with no user interaction when the app is authenticated', async () => {
         const bridge = createDeterministicSystemTaskBridge();
         const respondSpy = vi.spyOn(bridge, 'respond');

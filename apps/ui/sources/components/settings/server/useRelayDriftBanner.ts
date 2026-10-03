@@ -26,7 +26,7 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
     const activeServerSnapshot = getActiveServerSnapshot();
     const runner = React.useMemo(() => getDefaultSystemTaskRunner(), []);
     const desktop = isTauriDesktop();
-    const { refresh: refreshLocalInspection } = useDesktopLocalInspection(desktop);
+    useDesktopLocalInspection(desktop);
     const isRepairUnavailable = runner.mode === 'unavailable';
 
     // The account this repair is for, read from the same owner the executor spec is built from, so
@@ -49,9 +49,6 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         // part of this surface's user action; loading it through a deferred chunk made a native
         // click fail with an unhandled "Load failed" while leaving the banner unchanged.
         confirm: presentRelayReconciliationConsent,
-        // The repair changed the runtime these facts describe; re-read rather than keep
-        // classifying the state the user just repaired.
-        onSucceeded: refreshLocalInspection,
     });
     const repairTaskSnapshot = setupTask.activeTaskSnapshot;
     const isRepairStarting = setupTask.isStarting;
@@ -114,6 +111,8 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
                 }
                 : setupTask.startError
                     ? { actionHint: t('settings.systemTaskStartFailed') }
+                : repairTaskSnapshot?.result?.ok === false
+                    ? { actionHint: repairTaskSnapshot.result.error.message }
                 : {}),
             onPress: handleStartRepair,
             ...(daemonRelayUrl

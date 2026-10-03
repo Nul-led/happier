@@ -92,8 +92,6 @@ export function useLocalDaemonControl(options: Readonly<{
             : {}),
         onServiceConsentRequired: presentSetupServiceConsent,
         onUnmanagedCliConsentRequired: presentUnmanagedCliConsent,
-        // The repair changed the runtime those facts describe, so the read is redone for everyone.
-        onSucceeded: refreshStatus,
     });
     const repairSnapshot = setupTask.activeTaskSnapshot;
 

@@ -124,7 +124,14 @@ export function DesktopLocalSetupRuntime(): null {
     // A settled proof failure is named, so the panel says which one happened and offers a Retry
     // instead of spinning on a run that already finished (INV8/INV10).
     const verification = gate.verification.status === 'blocked' ? gate.verification.code : 'pending';
-    const visible = gate.snapshot.presentation === 'panel';
+    const taskParams = gate.setupTask.activeTaskSpec?.params;
+    const runMatchesTarget = taskParams !== null && typeof taskParams === 'object'
+        && 'activeRelayUrl' in taskParams && 'expectedAccountId' in taskParams
+        && taskParams.activeRelayUrl === getActiveServerSnapshot().serverUrl
+        && taskParams.expectedAccountId === appAccountId;
+    const operationNeedsPresentation = runMatchesTarget && !gate.setupRunDismissed
+        && (gate.setupTask.isStarting || (run != null && run.result?.ok !== true));
+    const visible = gate.snapshot.presentation === 'panel' || operationNeedsPresentation;
     const relayMove = run != null && gate.setupRunMovesRelay === true;
     const inspectionTaskId = gate.inspection.status !== 'resolved' ? gate.inspectionTaskId ?? null : null;
     const cliChannel = gate.inspection.status === 'resolved' ? gate.inspection.facts.acquisition.channel : null;

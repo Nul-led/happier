@@ -46,6 +46,7 @@ export type DesktopLocalSetupGate = Readonly<{
     setupTask: ReturnType<typeof useThisComputerSetupTask>;
     /** Whether the current setup run moves this computer to another relay (the coordinator's fact for that run). */
     setupRunMovesRelay: boolean;
+    setupRunDismissed: boolean;
     /** Re-runs a failed inspection, or a failed setup, visibly. */
     retry: () => void;
     /**
@@ -135,7 +136,16 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
     );
     const [inspectionAttempt, setInspectionAttempt] = React.useState(0);
     const [verification, setVerification] = React.useState<DesktopSetupVerification>({ status: 'idle' });
-    const [declinedAttempt, setDeclinedAttempt] = React.useState<string | null>(null);
+    const setupOperation = React.useSyncExternalStore(
+        desktopSetupCoordinator.subscribe, desktopSetupCoordinator.readSetupOperation, desktopSetupCoordinator.readSetupOperation,
+    );
+    const [declinedAttempt, setDeclinedAttempt] = React.useState<Readonly<{
+        triggerKey: string;
+        operation: object | null;
+    }> | null>(null);
+    const declineAttempt = React.useCallback((key: string) => {
+        setDeclinedAttempt({ triggerKey: key, operation: desktopSetupCoordinator.readSetupOperation() });
+    }, []);
     /** The attempt whose quiet start has already had its turn (H6/D6). */
     const [quietStartAttempted, setQuietStartAttempted] = React.useState<string | null>(null);
     const setupAttemptRef = React.useRef<string | null>(null);
@@ -217,7 +227,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         onServiceConsentRequired: async (prompt) => {
             const approved = await presentSetupServiceConsent(prompt);
             if (!approved) {
-                setDeclinedAttempt(triggerKeyRef.current);
+                declineAttempt(triggerKey);
             }
             return approved;
         },
@@ -227,7 +237,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         onUnmanagedCliConsentRequired: async (decision) => {
             const approved = await presentUnmanagedCliConsent(decision);
             if (!approved) {
-                setDeclinedAttempt(triggerKeyRef.current);
+                declineAttempt(triggerKey);
             }
             return approved;
         },
@@ -236,7 +246,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         onCliChoiceRequired: async (prompt) => {
             const choice = await presentCliChoice(prompt);
             if (choice === null) {
-                setDeclinedAttempt(triggerKeyRef.current);
+                declineAttempt(triggerKey);
             }
             return choice;
         },
@@ -245,7 +255,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         onAccountConsentRequired: async (request) => {
             const approved = (await presentRelayReconciliationConsent(request)) !== 'keep';
             if (!approved) {
-                setDeclinedAttempt(triggerKeyRef.current);
+                declineAttempt(triggerKey);
             }
             return approved;
         },
@@ -253,6 +263,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         // daemon carries the wrong identity, ownership has not converged, or the relay cannot
         // reach the machine at all. The same proof the settings flow uses decides it here.
         onSucceeded: () => runProof({ fresh: true }),
+        confirm: presentRelayReconciliationConsent,
     });
 
     // The coordinator keeps the last established facts while it reads again, because a surface
@@ -335,7 +346,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
                 firstRunSettled: firstRunSettledRef.current,
                 // D5 — a daemon this device already chose to keep is the same answer as declining,
                 // given before this launch: no panel, no question, the drift banner carries it.
-                userDeclinedThisAttempt: declinedAttempt === triggerKey || keptApplies,
+                userDeclinedThisAttempt: declinedAttempt?.triggerKey === triggerKey || keptApplies,
             },
         ),
         [attemptKey, auth.authenticatedThisRun, declinedAttempt, expectation, inspection, keptApplies, quietStartAttempted, reachability, triggerKey],
@@ -355,13 +366,14 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
     // login-start setting promised every service the app manages answers while the app is open.
     // F5 — never beside a setup run: while the executor is being launched or runs, it owns this
     // computer's services, and a concurrent start could be observed mid-way and mislead it.
+    const setupActive = desktopSetupCoordinator.isSetupActive();
     const otherServiceNeedsStart = snapshot.reason !== 'service_start_pending'
         && snapshot.state !== 'setup'
         && inspection.status === 'resolved'
         && thisComputerHasServiceToStart(inspection)
-        && !desktopSetupCoordinator.isSetupActive();
+        && !setupActive;
     React.useEffect(() => {
-        if (!options.enabled || (snapshot.reason !== 'service_start_pending' && !otherServiceNeedsStart) || quietStartRef.current === attemptKey) {
+        if (!options.enabled || setupActive || (snapshot.reason !== 'service_start_pending' && !otherServiceNeedsStart) || quietStartRef.current === attemptKey) {
             return;
         }
         quietStartRef.current = attemptKey;
@@ -379,9 +391,9 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
                 setQuietStartAttempted(key);
             },
         );
-    }, [attemptKey, options.enabled, otherServiceNeedsStart, runProof, snapshot.reason]);
+    }, [attemptKey, options.enabled, otherServiceNeedsStart, runProof, setupActive, snapshot.reason]);
 
-    const setupLaunch = setupTask.launch;
+    const setupStart = setupTask.start;
     React.useEffect(() => {
         if (!options.enabled || snapshot.state !== 'setup' || verification.status !== 'idle') {
             return;
@@ -390,7 +402,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         // de-duplication guard comes first: a run this gate already started or refused must never
         // be able to swallow a fresh direct choice.
         const setupInFlight = setupTask.activeTaskSnapshot != null && setupTask.activeTaskSnapshot.result == null;
-        if (setupAttemptRef.current === triggerKey || setupInFlight || setupTask.isStarting) {
+        if (setupAttemptRef.current === triggerKey || setupInFlight || setupTask.isStarting || desktopSetupCoordinator.isSetupActive()) {
             return;
         }
         // The one trigger question: would the executor MOVE a background service that is already
@@ -414,7 +426,7 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         // the drift banner carries it instead of a panel over no run.
         if (relayChanged && !consumeDirectRelaySelectionIntent(expectation.serverId)) {
             setupAttemptRef.current = triggerKey;
-            setDeclinedAttempt(triggerKey);
+            declineAttempt(triggerKey);
             return;
         }
         // The choice the user just made replaces the refusal that came before it.
@@ -426,20 +438,34 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
             || accountChanged
             || daemonContradictsTarget({ inspection, target: expectation });
         setupAttemptRef.current = triggerKey;
-        const settle = (outcome: Readonly<{ taskId: string }> | null) => {
+        const settle = (outcome: string | null) => {
             if (outcome === null) {
-                setDeclinedAttempt(triggerKey);
+                declineAttempt(triggerKey);
             }
         };
-        const run = isReconciliation
-            ? desktopSetupCoordinator.reconcile({ start: setupLaunch, confirm: presentRelayReconciliationConsent })
-            : desktopSetupCoordinator.startSetup({ start: setupLaunch, confirm: presentRelayReconciliationConsent });
+        const run = setupStart({ reconcile: isReconciliation });
         void run.then(settle).catch(() => {
             // `setupTask.startError` carries the failure; the surface renders it as blocked.
         });
-    }, [expectation, inspection, options.enabled, setupLaunch, setupTask.activeTaskSnapshot, setupTask.isStarting, snapshot.state, triggerKey, verification.status]);
+    }, [declineAttempt, expectation, inspection, options.enabled, setupStart, setupTask.activeTaskSnapshot, setupTask.isStarting, snapshot.state, triggerKey, verification.status]);
 
     const retry = React.useCallback(() => {
+        const spec = setupTask.activeTaskSpec;
+        const taskParams = spec?.params;
+        if (setupTask.activeTaskSnapshot?.result?.ok === false
+            && taskParams !== null && typeof taskParams === 'object' && !Array.isArray(taskParams)
+            && 'activeRelayUrl' in taskParams && 'expectedAccountId' in taskParams
+            && taskParams.activeRelayUrl === expectation.relayUrl
+            && taskParams.expectedAccountId === expectation.accountId
+            && desktopLocalRuntimeConverged(settledInspection, expectation)) {
+            // An explicit CLI-choice failure is not repaired by proving the unchanged daemon.
+            // Re-enter the same canonical setup action, retaining its home-wide CLI intent.
+            setDeclinedAttempt(null);
+            void setupTask.start({ reconsiderCli: 'reconsiderCli' in taskParams && taskParams.reconsiderCli === true }).catch(() => {
+                // The retained coordinator start error is presented by the existing surface.
+            });
+            return;
+        }
         setupAttemptRef.current = null;
         proofAttemptRef.current = null;
         quietStartRef.current = null;
@@ -447,11 +473,11 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         setQuietStartAttempted(null);
         setVerification({ status: 'idle' });
         setInspectionAttempt((value) => value + 1);
-    }, []);
+    }, [expectation, settledInspection, setupTask.activeTaskSnapshot, setupTask.activeTaskSpec, setupTask.start]);
 
     const continueWithoutThisComputer = React.useCallback(() => {
-        setDeclinedAttempt(triggerKeyRef.current);
-    }, []);
+        declineAttempt(triggerKeyRef.current);
+    }, [declineAttempt]);
 
     return {
         snapshot,
@@ -459,6 +485,8 @@ export function useDesktopLocalSetupGate(options: Readonly<{ enabled: boolean }>
         verification,
         inspectionTaskId,
         setupTask,
+        setupRunDismissed: declinedAttempt !== null && declinedAttempt.triggerKey === triggerKey
+            && declinedAttempt.operation === setupOperation,
         // Fixed when the coordinator launched the run, so it names the run consistently through
         // its own post-setup re-read.
         setupRunMovesRelay: desktopSetupCoordinator.readLaunchedRunMovesRelay(setupTask.activeTaskSnapshot?.taskId ?? null),

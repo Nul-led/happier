@@ -13,8 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createSystemTaskRunner } from '@/components/systemTasks/createSystemTaskRunner';
 import type { SystemTaskBridgeListenerSet, SystemTaskRunner } from '@/components/systemTasks/types';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { renderHook, renderScreen, standardCleanup } from '@/dev/testkit';
+import { useThisComputerSetupTask } from '@/components/systemTasks/useThisComputerSetupTask';
+import { buildLocalMachineSetupSystemTaskSpec } from '@/components/systemTasks/buildLocalMachineSetupSystemTaskSpec';
 import { storage as appStorage } from '@/sync/domains/state/storageStore';
+import { loadLocalSettings } from '@/sync/domains/state/persistence';
 
 import type { DesktopLocalInspection, DesktopLocalReadinessFacts } from './deriveDesktopLocalSetupSnapshot';
 import { createDesktopSetupCoordinator, desktopSetupCoordinator } from './desktopSetupCoordinator';
@@ -22,13 +25,14 @@ import * as directRelaySelectionIntent from './directRelaySelectionIntent';
 import { DesktopLocalSetupPanel } from './DesktopLocalSetupPanel';
 import { DesktopLocalSetupRuntime } from './DesktopLocalSetupRuntime';
 import { useDesktopLocalSetupGate, type DesktopLocalSetupGate } from './useDesktopLocalSetupGate';
+import { rememberKeptBackgroundService } from './desktopRelayMovePreference';
 
 /**
  * A11-11 — the gate runs against its REAL owners: the coordinator (one inspection, one readiness
  * proof, the move question), the setup task hook, the direct-selection intent, the background
  * service commands and the consent presenters (each case a fresh real coordinator instance). Only
  * genuine boundaries are faked: the desktop system-task bridge (what the executor answers), the
- * machine RPC, the modal stack, secure token storage, the device-local settings store, and the
+ * machine RPC, the modal stack, secure token storage, native MMKV persistence, and the
  * app's active-server / account / auth state.
  */
 const state = vi.hoisted(() => ({
@@ -39,14 +43,7 @@ const state = vi.hoisted(() => ({
         generation: 1,
     },
     accountId: 'acct_app' as string | null,
-    settings: {
-        serverSelectionActiveTargetKind: 'server' as 'server' | 'group' | null,
-        serverSelectionActiveTargetId: 'custom-2' as string | null,
-    },
-    storageListeners: new Set<() => void>(),
     authenticatedThisRun: false,
-    /** D5 — the daemon this device chose to keep as it is (device-local settings). */
-    keptBackgroundService: null as { relayKey: string; accountId: string | null } | null,
 }));
 
 /** What the executor answers each `daemon.service.status.v1` read: an inspection, or `hold` (never answers). */
@@ -113,6 +110,11 @@ vi.mock('./desktopSetupCoordinator', async (importOriginal) => {
         reconcile: (params) => current().reconcile(params),
         readLaunchedRunMovesRelay: (taskId) => current().readLaunchedRunMovesRelay(taskId),
         isSetupActive: () => current().isSetupActive(),
+        readSetupRun: () => current().readSetupRun(),
+        readSetupOperation: () => current().readSetupOperation(),
+        readSetupStarting: () => current().readSetupStarting(),
+        readSetupStartError: () => current().readSetupStartError(),
+        launchSetupTask: (params) => current().launchSetupTask(params),
     };
     return { ...actual, desktopSetupCoordinator: delegate };
 });
@@ -153,9 +155,8 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     };
 });
 
-// N-17 — the device-local preferences stay real (`desktopRelayMovePreference` over the app's
-// local-settings store); a case sets them with `setKeptBackgroundService`, and the gate's
-// `useLocalSetting` below reads that same store.
+// D5 uses the real device-local store, writers and useLocalSetting subscription. Vitest's
+// canonical native MMKV boundary supplies in-memory persistence; no store projection is mocked.
 
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ authenticatedThisRun: state.authenticatedThisRun }),
@@ -170,23 +171,12 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', () => ({
     getActiveServerAccountScope: () => (state.accountId ? { serverId: state.activeServer.serverId, accountId: state.accountId } : null),
 }));
 
-vi.mock('@/sync/domains/state/storage', () => ({
-    storage: {
-        subscribe: (listener: () => void) => {
-            state.storageListeners.add(listener);
-            return () => state.storageListeners.delete(listener);
-        },
-        getState: () => ({ settings: state.settings }),
-    },
-    useLocalSetting: (name: string) => (name === 'desktopKeptBackgroundService' ? state.keptBackgroundService : undefined),
-}));
-
 /** D5 — "Keep it as is", remembered on this device: in the real local-settings store and the gate's read. */
 function setKeptBackgroundService(identity: { relayKey: string; accountId: string | null } | null): void {
-    state.keptBackgroundService = identity;
-    appStorage.setState((current) => ({
-        localSettings: { ...current.localSettings, desktopKeptBackgroundService: identity, desktopAlwaysMoveDefaultFollowingService: false },
-    }) as never);
+    appStorage.getState().applyLocalSettings({
+        desktopKeptBackgroundService: identity,
+        desktopAlwaysMoveDefaultFollowingService: false,
+    });
 }
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -496,9 +486,7 @@ async function resetHarness(): Promise<void> {
     spies.getCredentialsForServerUrl.mockImplementation(async () => null);
     state.activeServer = { serverId: 'custom-2', serverUrl: 'https://relay.example.test', activeLocalRelayUrl: null, generation: 1 };
     state.accountId = 'acct_app';
-    state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-2' };
     state.authenticatedThisRun = false;
-    state.storageListeners.clear();
     setKeptBackgroundService(null);
     observedGate = null;
     authenticate = null;
@@ -516,6 +504,117 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
 
     afterEach(() => {
         standardCleanup();
+    });
+
+    it('adopts an explicit leaf run at the shell and proves success after the leaf leaves', async () => {
+        answerStatus(READY_INSPECTION);
+        await renderGate();
+        const previousProofs = spies.machineRpc.mock.calls.length;
+        const leaf = await renderHook(() => useThisComputerSetupTask({ runner: bridge.runner! }));
+        await renderer.act(async () => {
+            await leaf.getCurrent().launch(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: state.activeServer.serverUrl,
+                activeWebappUrl: state.activeServer.serverUrl,
+                activeLocalRelayUrl: null,
+                expectedAccountId: 'acct_app',
+                channel: 'stable',
+            }));
+        });
+        const taskId = leaf.getCurrent().activeTaskId;
+        await leaf.unmount();
+        expect(observedGate?.setupTask.activeTaskId).toBe(taskId);
+        await completeSetup();
+        await settle();
+        expect(spies.machineRpc.mock.calls.length).toBe(previousProofs + 1);
+        expect(observedGate?.verification.status).toBe('verified');
+    });
+
+    it('retries a failed explicit CLI choice even when the existing runtime is already ready', async () => {
+        answerStatus(READY_INSPECTION);
+        await renderGate();
+        const leaf = await renderHook(() => useThisComputerSetupTask({ runner: bridge.runner! }));
+        await renderer.act(async () => {
+            await leaf.getCurrent().launch(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: state.activeServer.serverUrl,
+                activeWebappUrl: state.activeServer.serverUrl,
+                activeLocalRelayUrl: null,
+                expectedAccountId: 'acct_app',
+                channel: 'stable',
+                reconsiderCli: true,
+            }));
+        });
+        await leaf.unmount();
+        const taskId = latestSetupTaskId();
+        await renderer.act(async () => {
+            bridge.listeners.get(taskId)?.onResult({
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION, taskId, ok: false,
+                error: { code: 'cli_install_failed', message: 'CLI choice could not finish' },
+            });
+        });
+        await settle();
+        await renderer.act(async () => observedGate?.retry());
+        await settle();
+        expect(startsOf('setup.thisComputer.v1')).toHaveLength(2);
+        expect(startsOf('setup.thisComputer.v1')[1]?.spec.params).toMatchObject({ reconsiderCli: true });
+    });
+
+    it('does not dismiss a new account when an original retained setup prompt is declined', async () => {
+        await renderGate();
+        const taskId = latestSetupTaskId();
+        state.accountId = 'acct_new';
+        await renderer.act(async () => refreshIdentity?.());
+        await settle();
+        modal.confirm['setupSurface.consentTitle'] = false;
+        await emitSetupPrompt(createSetupServiceConsentPromptData({
+            takeover: null, message: null, competingServices: [], servicesToRemove: [],
+        }));
+        expect(bridge.responses).toEqual([{ taskId, answer: { approved: false } }]);
+        expect(observedGate?.setupRunDismissed).toBe(false);
+    });
+
+    it('adopts a later explicit request after Continue without this computer dismissed an earlier run', async () => {
+        await renderGate();
+        await renderer.act(async () => observedGate?.continueWithoutThisComputer());
+        expect(observedGate?.setupRunDismissed).toBe(true);
+        const previousTaskId = latestSetupTaskId();
+        await renderer.act(async () => {
+            bridge.listeners.get(previousTaskId)?.onResult({
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION, taskId: previousTaskId, ok: false,
+                error: { code: 'setup_failed', message: 'Previous setup stopped' },
+            });
+        });
+        await settle();
+        const leaf = await renderHook(() => useThisComputerSetupTask({ runner: bridge.runner! }));
+        await renderer.act(async () => { await leaf.getCurrent().start(); });
+        expect(observedGate?.setupTask.activeTaskId).not.toBe(previousTaskId);
+        expect(observedGate?.setupRunDismissed).toBe(false);
+    });
+
+    it('keeps Continue without this computer bound through a pending pre-launch inspection', async () => {
+        answerNextStatus({ status: 'failed', error: { code: 'cli_choice_required', message: 'CLI choice required' } });
+        answerStatus('hold');
+        await renderGate();
+        expect(observedGate?.setupTask.isStarting).toBe(true);
+        expect(observedGate?.setupTask.activeTaskId).toBeNull();
+        await renderer.act(async () => observedGate?.continueWithoutThisComputer());
+        const statusTaskId = startsOf('daemon.service.status.v1').at(-1)?.taskId;
+        expect(statusTaskId).toBeDefined();
+        await renderer.act(async () => {
+            if (statusTaskId) bridge.listeners.get(statusTaskId)?.onResult(toStatusResult(statusTaskId, UNCONFIGURED_INSPECTION));
+        });
+        await settle();
+        expect(startsOf('setup.thisComputer.v1')).toHaveLength(1);
+        expect(observedGate?.setupRunDismissed).toBe(true);
+    });
+
+    it('does not quietly start a stopped service while a retained setup operation owns this computer', async () => {
+        await renderGate();
+        answerStatus(ON_DEMAND_STOPPED_INSPECTION);
+        await renderer.act(async () => {
+            await desktopSetupCoordinator.inspect({ fresh: true });
+        });
+        await settle();
+        expect(startsOf('daemon.service.start.v1')).toEqual([]);
     });
 
     it('converges a computer with nothing installed through the plain executor', async () => {
@@ -578,7 +677,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
 
     it('reconciles a direct Relay/Home selection through the coordinator', async () => {
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         directRelaySelectionIntent.recordDirectRelaySelectionIntent('custom-3');
         const launches = spyOnLaunchPaths();
 
@@ -592,7 +690,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
         // A group may contain several relays and cannot name one daemon target (B2), so the group
         // action records no direct-selection intent.
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'group', serverSelectionActiveTargetId: 'group-1' };
         const launches = spyOnLaunchPaths();
 
         await renderGate();
@@ -606,7 +703,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
         // Notification routing, session navigation, voice and machine detail all switch with
         // scope `device`; none of them is the direct Relay/Home action, so no intent exists.
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-2' };
         const launches = spyOnLaunchPaths();
 
         await renderGate();
@@ -664,7 +760,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
         // agree for a reason the user never asked for. Only the direct action can say otherwise,
         // and it said nothing this run.
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         const launches = spyOnLaunchPaths();
 
         await renderGate();
@@ -675,7 +770,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
 
     it('asks the direct action, and spends its intent instead of re-reading persisted state', async () => {
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         const intent = directRelaySelectionIntent;
         intent.recordDirectRelaySelectionIntent('custom-3');
         const launches = spyOnLaunchPaths();
@@ -719,7 +813,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
 
     it('reconciles a signed-out direct selection only once authentication has completed', async () => {
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         directRelaySelectionIntent.recordDirectRelaySelectionIntent('custom-3');
         const launches = spyOnLaunchPaths();
 
@@ -806,7 +899,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
         // same facts now describe a relay the app has left, so the snapshot reads `setup`.
         // The previous attempt's proof belongs to that old relay and must not park the gate.
         state.activeServer = { serverId: 'custom-3', serverUrl: 'https://new.example.test', activeLocalRelayUrl: null, generation: 2 };
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         directRelaySelectionIntent.recordDirectRelaySelectionIntent('custom-3');
         await renderer.act(async () => {
             refreshIdentity?.();
@@ -843,7 +935,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
         // Hours later, still the same app run: the user picks a different Relay themselves. This
         // is maintenance in an app they are using; the panel carries it, nothing blocks.
         state.activeServer = { serverId: 'custom-3', serverUrl: 'https://new.example.test', activeLocalRelayUrl: null, generation: 2 };
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         directRelaySelectionIntent.recordDirectRelaySelectionIntent('custom-3');
         await renderer.act(async () => {
             refreshIdentity?.();
@@ -1039,9 +1130,24 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
         expect(launches.startSetup).not.toHaveBeenCalled();
     });
 
-    it('does not put a panel or a question in front of a daemon this device chose to keep (D5)', async () => {
+    it('subscribes to the remembered Keep preference and reads it again on reopen (D5)', async () => {
         answerStatus(DRIFTED_INSPECTION);
-        setKeptBackgroundService({ relayKey: 'https://old.example.test', accountId: 'acct_app' });
+        await desktopSetupCoordinator.inspect();
+        const screen = await renderGate(false);
+        expect(observedGate?.snapshot).toMatchObject({ state: 'setup', presentation: 'panel' });
+
+        const kept = { relayKey: 'https://old.example.test', accountId: 'acct_app' };
+        await renderer.act(async () => {
+            rememberKeptBackgroundService(kept);
+        });
+        // No forced render or mirrored setting: the real local-setting subscription must notify.
+        expect(loadLocalSettings().desktopKeptBackgroundService).toEqual(kept);
+        expect(observedGate?.snapshot).toMatchObject({ state: 'setup', presentation: 'hidden' });
+
+        await screen.unmount();
+        // A fresh lifecycle reads persisted settings through the same real store.
+        appStorage.setState({ localSettings: loadLocalSettings() });
+        coordinatorRef.current = createDesktopSetupCoordinator({ runner: () => bridge.runner! });
 
         await renderGate();
 
@@ -1088,7 +1194,6 @@ describe('useDesktopLocalSetupGate — what may mutate the local daemon (R8/INV7
     it('takes the panel away when the user keeps the service where it is', async () => {
         answerStatus(DRIFTED_INSPECTION);
         await openedOnRelayThenMovedTo('custom-3', 'https://new.example.test');
-        state.settings = { serverSelectionActiveTargetKind: 'server', serverSelectionActiveTargetId: 'custom-3' };
         directRelaySelectionIntent.recordDirectRelaySelectionIntent('custom-3');
         modal.alertPress = ['setupSurface.relayMoveKeep'];
         const launches = spyOnLaunchPaths();

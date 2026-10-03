@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveForeignHappierCli, writeHappierCliChoice } from '@happier-dev/cli-common/firstPartyRuntime';
+import { readHappierCliChoiceSync, resolveForeignHappierCli, writeHappierCliChoice } from '@happier-dev/cli-common/firstPartyRuntime';
 import { executeSystemTask } from '@happier-dev/cli-common/systemTasks';
 import { parseSetupCliChoicePromptData, SETUP_CLI_CHOICE_PROMPT_KIND, type SystemTaskJsonValue } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -41,7 +41,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-function fakeCliScript(params: Readonly<{ version: string; logPath: string; dryRun: unknown }>): string {
+function fakeCliScript(params: Readonly<{ version: string; logPath: string; dryRun: unknown; userPinPath?: string }>): string {
   const status = {
     server: { activeServerId: 'custom', serverUrl: RELAY, localServerUrl: null, publicServerUrl: RELAY, webappUrl: RELAY, comparableKey: 'relay.example.test' },
     daemon: { running: true, pid: 4321, httpPort: 7777, startedWithCliVersion: params.version, serviceManaged: true, serviceLabel: 'happier.daemon' },
@@ -59,18 +59,26 @@ if (has('--version')) console.log(${JSON.stringify(params.version)});
 else if (args[0] === 'daemon' && args[1] === 'status') out(${JSON.stringify(status)});
 else if (args[0] === 'auth' && args[1] === 'status') out({ ok: true, data: { authenticated: true, accountId: 'acct_app', machineId: 'machine-1' } });
 else if (args[0] === 'server' && args[1] === 'set') out({ ok: true, data: { active: { serverUrl: ${JSON.stringify(RELAY)}, comparableKey: 'relay.example.test' } } });
-else if (args[1] === 'service' && args[2] === 'list') out({ entries: [], services: [], capabilities: { pinnedServiceCoexistence: true } });
+else if (args[1] === 'service' && args[2] === 'list') out({ entries: ${params.userPinPath ? `[JSON.parse(require('node:fs').readFileSync(${JSON.stringify(params.userPinPath)}, 'utf8'))]` : '[]'}, services: [], capabilities: { pinnedServiceCoexistence: true } });
 else if (args[1] === 'service' && args[2] === 'install' && has('--dry-run')) out(${JSON.stringify(params.dryRun)});
 else out({ ok: true });
 `;
 }
 
-async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}) {
+async function createComputer(options: Readonly<{ brokenNpmCli?: boolean; userOwnedPin?: boolean }> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'hsetup-r12-'));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const home = join(root, 'home');
   const logPath = join(root, 'cli.log');
   await mkdir(home, { recursive: true });
+  const userPinPath = options.userOwnedPin ? join(root, 'user-pinned-service.json') : undefined;
+  if (userPinPath) {
+    await writeFile(userPinPath, JSON.stringify({
+      targetMode: 'pinned', releaseChannel: 'stable', serverId: 'custom', activeServerId: 'custom',
+      relayUrl: RELAY, happierHomeDir: join(home, '.happier'), managedBy: null,
+      command: '/user-owned/happier', autostart: 'at-login',
+    }));
+  }
 
   // An npm global install: `<prefix>/bin/happier` → the package's own entry, with its package.json.
   const packageRoot = join(root, 'npm-global', 'lib', 'node_modules', '@happier-dev', 'cli');
@@ -82,7 +90,7 @@ async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}
   await writeFile(join(packageRoot, 'bin', 'happier.cjs'), options.brokenNpmCli
     // A CLI that answers nothing setup can read (a pre-0.2 build, or one that errors).
     ? `#!${process.execPath}\nprocess.exit(3);\n`
-    : fakeCliScript({ version: NPM_VERSION, logPath, dryRun: { ok: true, plan: {} } }));
+    : fakeCliScript({ version: NPM_VERSION, logPath, dryRun: { ok: true, plan: {} }, userPinPath }));
   await chmod(join(packageRoot, 'bin', 'happier.cjs'), 0o755);
   await symlink(join(packageRoot, 'bin', 'happier.cjs'), npmCli);
 
@@ -94,6 +102,7 @@ async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}
   await writeFile(join(payloadRoot, 'happier'), fakeCliScript({
     version: MANAGED_VERSION,
     logPath,
+    userPinPath,
     dryRun: {
       ok: true,
       plan: {},
@@ -130,7 +139,7 @@ async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}
     ensurePathExposure: ensureManagedCliPathExposureDefault,
   });
 
-  const run = async (choice: 'managed' | 'own', channel: 'stable' | 'preview' = 'stable') => {
+  const run = async (choice: 'managed' | 'own', channel: 'stable' | 'preview' = 'stable', taskParams: Readonly<Record<string, SystemTaskJsonValue>> = {}) => {
     const prompts: string[] = [];
     const promptData: unknown[] = [];
     const result = await kind.run({
@@ -140,6 +149,7 @@ async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}
         activeLocalRelayUrl: null,
         channel,
         expectedAccountId: 'acct_app',
+        ...taskParams,
       } satisfies Record<string, SystemTaskJsonValue>,
       emit: () => undefined,
       prompt: async (prompt) => {
@@ -159,10 +169,54 @@ async function createComputer(options: Readonly<{ brokenNpmCli?: boolean }> = {}
     emitEvent: () => undefined,
   });
 
-  return { home, npmBin, npmCli, managedShim, preparePayload, run, readLog, readStatus };
+  return { home, npmBin, npmCli, managedShim, preparePayload, run, readLog, readStatus, userPinPath };
 }
 
 describe.skipIf(process.platform === 'win32')('one CLI per computer, composed (R12)', () => {
+  it('Settings changes the home CLI in both directions while the active user-owned pin and relay identity stay untouched', async () => {
+    const computer = await createComputer({ userOwnedPin: true });
+    if (!computer.userPinPath) throw new Error('Expected the user-owned pin fixture.');
+    const originalPin = await readFile(computer.userPinPath, 'utf8');
+    const happierHome = join(computer.home, '.happier');
+    await mkdir(join(happierHome, 'servers', 'custom'), { recursive: true });
+    const identityFiles = [join(happierHome, 'settings.json'), join(happierHome, 'servers', 'custom', 'access.key')];
+    for (const path of identityFiles) await writeFile(path, 'user-owned relay identity\n');
+    await writeHappierCliChoice({ choice: { mode: 'own', command: computer.npmCli }, processEnv: process.env });
+
+    const managed = await computer.run('managed', 'stable', { reconsiderCli: true, cliOnly: true });
+
+    expect(managed.prompts).toEqual([SETUP_CLI_CHOICE_PROMPT_KIND]);
+    expect(managed.result).toMatchObject({
+      machineId: null, cliProvenance: 'managed', cliVersion: MANAGED_VERSION,
+      relayChanged: false, credentialsChanged: false, serviceAction: 'none',
+    });
+    expect(readHappierCliChoiceSync({ processEnv: process.env })).toEqual({ mode: 'managed' });
+    await vi.waitFor(async () => {
+      expect(await readFile(join(computer.home, '.bashrc'), 'utf8')).toContain('Added by Happier Desktop');
+    });
+    vi.stubEnv('PATH', `${join(happierHome, 'bin')}:${computer.npmBin}`);
+
+    const own = await computer.run('own', 'stable', { reconsiderCli: true, cliOnly: true });
+
+    expect(own.prompts).toEqual([SETUP_CLI_CHOICE_PROMPT_KIND]);
+    expect(own.result).toMatchObject({ machineId: null, cliProvenance: 'override', serviceAction: 'none' });
+    expect(readHappierCliChoiceSync({ processEnv: process.env })).toEqual({ mode: 'own', command: computer.npmCli });
+    expect(await readFile(join(computer.home, '.bashrc'), 'utf8')).not.toContain('Added by Happier Desktop');
+    expect(await readFile(computer.userPinPath, 'utf8')).toBe(originalPin);
+    for (const path of identityFiles) expect(await readFile(path, 'utf8')).toBe('user-owned relay identity\n');
+    // Only executable-version probes are allowed: no relay, auth, inventory or service command.
+    expect((await computer.readLog()).every((entry) => entry.args.length === 1 && entry.args[0] === '--version')).toBe(true);
+  });
+
+  it.each<Record<string, SystemTaskJsonValue>>([{ cliOnly: true }, { reconsiderCli: false, cliOnly: true }, { reconsiderCli: true, cliOnly: 'true' }])(
+    'rejects an invalid CLI-only request before touching this computer: %j', async (taskParams) => {
+      const computer = await createComputer({ userOwnedPin: true });
+      await expect(computer.run('managed', 'stable', taskParams)).rejects.toMatchObject({ code: 'invalid_params' });
+      expect(existsSync(join(computer.home, '.happier', 'cli-choice.json'))).toBe(false);
+      expect(computer.preparePayload).not.toHaveBeenCalled();
+    },
+  );
+
   it('"Keep my own": no managed CLI is installed, no PATH line is written, and readiness is read from the npm CLI', async () => {
     const computer = await createComputer();
 

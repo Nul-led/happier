@@ -398,6 +398,25 @@ describe('desktopSetupCoordinator', () => {
         expect(desktopSetupCoordinator.readLaunchedRunMovesRelay(null)).toBe(false);
     });
 
+    it('retains the target that reconciliation asked about while the user changes focused relay', async () => {
+        resolveWith(AMBIENT_RESULT);
+        const { desktopSetupCoordinator } = await importCoordinator();
+        await desktopSetupCoordinator.inspect();
+        mocks.activeServer = { serverId: 'custom-3', serverUrl: 'https://other.example.test', activeLocalRelayUrl: null, generation: 2 };
+        let answer!: (value: 'move') => void;
+        const consent = new Promise<'move'>((resolve) => { answer = resolve; });
+        let asked!: () => void;
+        const question = new Promise<void>((resolve) => { asked = resolve; });
+        const confirm = vi.fn(async () => { asked(); return await consent; });
+        const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_setup_original');
+        const pending = desktopSetupCoordinator.reconcile({ start: startExecutor, confirm });
+        await question;
+        mocks.activeServer = { serverId: 'custom-4', serverUrl: 'https://newly-focused.example.test', activeLocalRelayUrl: null, generation: 3 };
+        answer('move');
+        await pending;
+        expect(startExecutor.mock.calls[0]?.[0].params).toMatchObject({ activeRelayUrl: 'https://other.example.test' });
+    });
+
     it('asks before moving a service whose target mode the CLI did not prove (UD5)', async () => {
         // `service.targetMode` is absent from an older CLI's status. UNKNOWN is not evidence that
         // this service follows the app's selected default relay, so the projection keeps it `null`
@@ -966,6 +985,20 @@ describe('desktopSetupCoordinator', () => {
             await expect(desktopSetupCoordinator.reconcile({ start: startExecutor, confirm: vi.fn(async () => 'move' as const) })).resolves.toBeNull();
             await expect(desktopSetupCoordinator.startSetup({ start: startExecutor, confirm: vi.fn(async () => 'move' as const) })).resolves.toBeNull();
             expect(startExecutor).not.toHaveBeenCalled();
+        });
+
+        it('handles the home-wide CLI change before convergence of a user-owned relay pin', async () => {
+            resolveWith({ ...AMBIENT_RESULT, data: { ...AMBIENT_RESULT.data, pinnedServices: { complete: true, coexistence: true, services: [{ ...pinnedOnRelayB, managedBy: null }], unreadable: [] }, serviceRows: relayBServedByPinned } });
+            const { desktopSetupCoordinator } = await importCoordinator();
+            appOnRelayB();
+            await desktopSetupCoordinator.inspect();
+            const startExecutor = vi.fn(async (_spec: SystemTaskSpec) => 'task_cli_choice');
+            const confirm = vi.fn(async () => 'move' as const);
+
+            await expect(desktopSetupCoordinator.startSetup({ start: startExecutor, confirm, reconsiderCli: true }))
+                .resolves.toEqual({ taskId: 'task_cli_choice' });
+            expect(startExecutor.mock.calls[0]?.[0].params).toMatchObject({ reconsiderCli: true, cliOnly: true });
+            expect(confirm).not.toHaveBeenCalled();
         });
 
         it('knows while a setup run it launched is active, so nothing else starts services beside it (F5)', async () => {

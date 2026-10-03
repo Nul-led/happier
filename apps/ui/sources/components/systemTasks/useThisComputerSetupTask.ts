@@ -101,6 +101,8 @@ async function presentCliChoiceDefault(prompt: SetupCliChoicePromptPayload): Pro
 export type ThisComputerSetupStartOptions = Readonly<{
     /** R12 — Settings' change action: ask the one-CLI question again through this same run. */
     reconsiderCli?: boolean;
+    /** The shell's direct-selection path uses the same captured prompt/approval operation. */
+    reconcile?: boolean;
 }>;
 
 /** The canonical account question, loaded when it is actually asked. `true` means move. */
@@ -146,125 +148,59 @@ export function useThisComputerSetupTask(options: Readonly<{
     confirm?: (request: ThisComputerMoveRequest) => Promise<RelayReconciliationConsentAnswer>;
 }> = {}) {
     const runner = options.runner ?? getSystemTasksRunner();
-    const [activeTaskId, setActiveTaskId] = React.useState<string | null>(null);
-    const [isStarting, setIsStarting] = React.useState(false);
-    const [startError, setStartError] = React.useState<string | null>(null);
+    const sharedRun = React.useSyncExternalStore(
+        desktopSetupCoordinator.subscribe, desktopSetupCoordinator.readSetupRun, desktopSetupCoordinator.readSetupRun,
+    );
+    const isStarting = React.useSyncExternalStore(
+        desktopSetupCoordinator.subscribe, desktopSetupCoordinator.readSetupStarting, desktopSetupCoordinator.readSetupStarting,
+    );
+    const startError = React.useSyncExternalStore(
+        desktopSetupCoordinator.subscribe, desktopSetupCoordinator.readSetupStartError, desktopSetupCoordinator.readSetupStartError,
+    );
+    const activeTaskId = sharedRun?.runner === runner ? sharedRun.taskId : null;
     const activeTaskSnapshot = useSystemTaskSnapshot(runner, activeTaskId);
     const handledResultTaskIdRef = React.useRef<string | null>(null);
     const confirmMove = options.confirm;
+    const optionsRef = React.useRef(options);
+    optionsRef.current = options;
 
-    // `launch` hands one explicit executor spec to the runner and makes it this hook's run; it is
-    // what the coordinator calls once the one question — if the facts called for one — is answered.
-    const launch = React.useCallback(async (spec: SystemTaskSpec): Promise<string> => {
-        setStartError(null);
-        try {
-            const taskId = await runner.start(spec);
-            handledResultTaskIdRef.current = null;
-            setActiveTaskId(taskId);
-            return taskId;
-        } catch (error) {
-            setStartError(error instanceof Error ? error.message : 'system_task_start_failed');
-            throw error;
-        }
-    }, [runner]);
-
-    // The coordinator composes the app's relay, account and ring and is the only caller of the
-    // executor; there is no ambient-target fallback (R3/B6). Starting is always caller-driven: the
-    // one automatic start lives in `useDesktopLocalSetupGate` (mounted once, by the shell's
-    // `DesktopLocalSetupRuntime`), so no second surface can begin local
-    // setup on its own (R9/INV1). Resolves `null` when the person kept the daemon where it is (D1).
-    const start = React.useCallback(async (startOptions: ThisComputerSetupStartOptions = {}): Promise<string | null> => {
-        setIsStarting(true);
-        setStartError(null);
-        try {
-            const outcome = await desktopSetupCoordinator.startSetup({
-                start: launch,
-                ...(confirmMove ? { confirm: confirmMove } : {}),
-                ...(startOptions.reconsiderCli ? { reconsiderCli: true } : {}),
-            });
-            return outcome?.taskId ?? null;
-        } catch (error) {
-            setStartError(error instanceof Error ? error.message : 'system_task_start_failed');
-            throw error;
-        } finally {
-            setIsStarting(false);
-        }
-    }, [confirmMove, launch]);
-
-    const cancel = React.useCallback(() => {
-        if (!activeTaskId) {
-            return;
-        }
-        void runner.cancel(activeTaskId);
-    }, [activeTaskId, runner]);
-
-    // Answers the setup task's prompts — the service-consent decision and the pairing request. The
-    // three-argument runner subscription replays
-    // already-recorded events, so a prompt emitted between `runner.start()` and this effect is
-    // still delivered; the signature set keeps handling exactly-once across replays and
-    // re-subscriptions. The primitives are destructured so an inline options object at the
-    // caller does not re-run this effect on every render.
-    const expectedRelayUrl = options.authRequestApproval?.expectedRelayUrl;
-    const expectedAccountId = options.authRequestApproval?.expectedAccountId;
-    const approvalServerId = options.authRequestApproval?.serverId;
-    const onServiceConsentRequiredRef = React.useRef(options.onServiceConsentRequired);
-    onServiceConsentRequiredRef.current = options.onServiceConsentRequired;
-    const onUnmanagedCliConsentRequiredRef = React.useRef(options.onUnmanagedCliConsentRequired);
-    onUnmanagedCliConsentRequiredRef.current = options.onUnmanagedCliConsentRequired;
-    const onAccountConsentRequiredRef = React.useRef(options.onAccountConsentRequired);
-    onAccountConsentRequiredRef.current = options.onAccountConsentRequired;
-    const onCliChoiceRequiredRef = React.useRef(options.onCliChoiceRequired);
-    onCliChoiceRequiredRef.current = options.onCliChoiceRequired;
-    const handledPromptSignaturesRef = React.useRef(new Set<string>());
-    React.useEffect(() => {
-        if (!activeTaskId) {
-            return;
-        }
-        const handled = handledPromptSignaturesRef.current;
-        return runner.subscribe(
-            activeTaskId,
-            (event) => {
+    // Capture the initiating operation's approval target and presenters. They remain callable
+    // after the leaf unmounts; reopening only adopts the coordinator's run, never adds a responder.
+    const launch = React.useCallback(async (spec: SystemTaskSpec, promptOptions = optionsRef.current): Promise<string> => {
+        const expectedRelayUrl = promptOptions.authRequestApproval?.expectedRelayUrl;
+        const expectedAccountId = promptOptions.authRequestApproval?.expectedAccountId;
+        const approvalServerId = promptOptions.authRequestApproval?.serverId;
+        return await desktopSetupCoordinator.launchSetupTask({
+            runner,
+            spec,
+            onEvent: (event) => {
+                if (runner.getSnapshot(event.taskId)?.result) return;
                 const consent = readSetupServiceConsentPrompt(event);
                 if (consent) {
-                    const consentSignature = `${event.taskId}:${event.tsMs}:consent`;
-                    if (handled.has(consentSignature)) {
-                        return;
-                    }
-                    handled.add(consentSignature);
-                    const present = onServiceConsentRequiredRef.current;
+                    const present = promptOptions.onServiceConsentRequired;
                     if (!present) {
-                        void runner.respond(activeTaskId, { approved: false, reason: 'consent_unavailable' });
+                        void runner.respond(event.taskId, { approved: false, reason: 'consent_unavailable' });
                         return;
                     }
                     void present(consent).then(
-                        (approved) => runner.respond(activeTaskId, { approved: approved === true }),
-                        () => runner.respond(activeTaskId, { approved: false, reason: 'consent_failed' }),
+                        (approved) => runner.respond(event.taskId, { approved: approved === true }),
+                        () => runner.respond(event.taskId, { approved: false, reason: 'consent_failed' }),
                     );
                     return;
                 }
                 const cliChoice = readSetupCliChoicePrompt(event);
                 if (cliChoice) {
-                    const choiceSignature = `${event.taskId}:${event.tsMs}:cliChoice`;
-                    if (handled.has(choiceSignature)) {
-                        return;
-                    }
-                    handled.add(choiceSignature);
-                    void (onCliChoiceRequiredRef.current ?? presentCliChoiceDefault)(cliChoice).then(
-                        (choice) => runner.respond(activeTaskId, { choice }),
-                        () => runner.respond(activeTaskId, { choice: null }),
+                    void (promptOptions.onCliChoiceRequired ?? presentCliChoiceDefault)(cliChoice).then(
+                        (choice) => runner.respond(event.taskId, { choice }),
+                        () => runner.respond(event.taskId, { choice: null }),
                     );
                     return;
                 }
                 const accountMove = readSetupAccountConsentRequest(event);
                 if (accountMove) {
-                    const accountSignature = `${event.taskId}:${event.tsMs}:account`;
-                    if (handled.has(accountSignature)) {
-                        return;
-                    }
-                    handled.add(accountSignature);
-                    void (onAccountConsentRequiredRef.current ?? presentAccountConsent)(accountMove).then(
-                        (approved) => runner.respond(activeTaskId, { approved: approved === true }),
-                        () => runner.respond(activeTaskId, { approved: false, reason: 'consent_failed' }),
+                    void (promptOptions.onAccountConsentRequired ?? presentAccountConsent)(accountMove).then(
+                        (approved) => runner.respond(event.taskId, { approved: approved === true }),
+                        () => runner.respond(event.taskId, { approved: false, reason: 'consent_failed' }),
                     );
                     return;
                 }
@@ -272,33 +208,42 @@ export function useThisComputerSetupTask(options: Readonly<{
                 if (!prompt) {
                     return;
                 }
-                const signature = `${event.taskId}:${event.tsMs}:${prompt.publicKeyB64Url}`;
-                if (handled.has(signature)) {
-                    return;
-                }
-                handled.add(signature);
                 // No relay or no account means nothing to bind the approval to; refuse by name
                 // rather than approve a pairing this run cannot vouch for.
                 if (!expectedRelayUrl || !expectedAccountId) {
-                    void runner.respond(activeTaskId, { approved: false, reason: 'approval_unavailable' });
+                    void runner.respond(event.taskId, { approved: false, reason: 'approval_unavailable' });
                     return;
                 }
-                const confirmUnmanagedCli = onUnmanagedCliConsentRequiredRef.current;
+                const confirmUnmanagedCli = promptOptions.onUnmanagedCliConsentRequired;
                 void approveSetupPairingForTarget({
                     prompt,
-                    activeTaskId,
+                    activeTaskId: event.taskId,
                     target: {
                         expectedRelayUrl,
                         expectedAccountId,
                         ...(approvalServerId ? { serverId: approvalServerId } : {}),
                     },
                     ...(confirmUnmanagedCli ? { confirmUnmanagedCli } : {}),
-                    respond: (answer) => runner.respond(activeTaskId, answer),
+                    respond: (answer) => runner.respond(event.taskId, answer),
                 });
             },
-            () => {},
-        );
-    }, [activeTaskId, approvalServerId, expectedAccountId, expectedRelayUrl, runner]);
+        });
+    }, [runner]);
+
+    const start = React.useCallback(async (startOptions: ThisComputerSetupStartOptions = {}): Promise<string | null> => {
+        const promptOptions = optionsRef.current;
+        const startSetup = startOptions.reconcile ? desktopSetupCoordinator.reconcile : desktopSetupCoordinator.startSetup;
+        const outcome = await startSetup({
+            start: (spec) => launch(spec, promptOptions),
+            ...(confirmMove ? { confirm: confirmMove } : {}),
+            ...(startOptions.reconsiderCli ? { reconsiderCli: true } : {}),
+        });
+        return outcome?.taskId ?? null;
+    }, [confirmMove, launch]);
+
+    const cancel = React.useCallback(() => {
+        if (activeTaskId) void runner.cancel(activeTaskId);
+    }, [activeTaskId, runner]);
 
     // The success callback is read through a ref so this effect depends on the run it reports, not
     // on the caller's options object — every caller passes an inline literal, so depending on it
@@ -319,6 +264,7 @@ export function useThisComputerSetupTask(options: Readonly<{
 
     return {
         activeTaskId,
+        activeTaskSpec: sharedRun?.runner === runner ? sharedRun.spec : null,
         activeTaskSnapshot,
         cancel,
         isStarting,

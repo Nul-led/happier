@@ -4,6 +4,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useRelayDriftBanner } from '@/components/settings/server/useRelayDriftBanner';
 import { useRelayDriftSummary } from '@/components/settings/server/useRelayDriftSummary';
+import { SystemTaskProgressCard } from '@/components/systemTasks/SystemTaskProgressCard';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { Text } from '@/components/ui/text/Text';
@@ -84,7 +85,7 @@ export function ThisComputerStatusRow(props: Readonly<{
     );
 }
 
-/** Mounted only while it is offered, so the repair's setup task lives no longer than the action. */
+/** A lazy presentation of the coordinator's operation; closing it leaves the responder intact. */
 function ConnectThisComputerAction(props: Readonly<{ style?: StyleProp<ViewStyle> }>): React.ReactElement | null {
     const { theme } = useUnistyles();
     const banner = useRelayDriftBanner();
@@ -93,19 +94,28 @@ function ConnectThisComputerAction(props: Readonly<{ style?: StyleProp<ViewStyle
     }
     const running = banner.repairTaskSnapshot != null && banner.repairTaskSnapshot.result == null;
     return (
-        <ActionListSection
-            style={props.style}
-            actions={[{
-                id: 'connect-this-computer',
-                testID: 'connection-popover-connect-this-computer',
-                label: banner.actionLabel,
-                ...(banner.actionHint ? { subtitle: banner.actionHint } : {}),
-                icon: <Icon name="arrows-left-right" size={16} color={theme.colors.text.secondary} />,
-                disabled: banner.actionDisabled === true || banner.isRepairStarting || running,
-                onPress: () => {
-                    void banner.onPress();
-                },
-            }]}
-        />
+        <>
+            <ActionListSection
+                style={props.style}
+                actions={[{
+                    id: 'connect-this-computer',
+                    testID: 'connection-popover-connect-this-computer',
+                    label: banner.isRepairStarting || running ? t('common.loading') : banner.actionLabel,
+                    ...(banner.actionHint ? { subtitle: banner.actionHint } : {}),
+                    icon: <Icon name="arrows-left-right" size={16} color={theme.colors.text.secondary} />,
+                    disabled: banner.actionDisabled === true || banner.isRepairStarting || running,
+                    onPress: () => {
+                        void banner.onPress();
+                    },
+                }]}
+            />
+            {banner.repairTaskSnapshot && banner.repairTaskSnapshot.result?.ok !== true ? (
+                <SystemTaskProgressCard
+                    snapshot={banner.repairTaskSnapshot}
+                    title={t('server.relayDrift.progressTitle')}
+                    onCancel={banner.onCancelRepair}
+                />
+            ) : null}
+        </>
     );
 }
