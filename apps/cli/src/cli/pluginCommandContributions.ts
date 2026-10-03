@@ -261,7 +261,7 @@ async function printPluginCommandFailure(
     }, { exitCode: 1 });
     return;
   }
-  console.error(errorFrame('Error:', [failure.message]));
+  console.error(errorFrame(failure.message));
   process.exitCode = 1;
 }
 

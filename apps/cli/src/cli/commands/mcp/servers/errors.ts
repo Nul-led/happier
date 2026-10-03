@@ -1,9 +1,9 @@
-import chalk from 'chalk';
 
 import type {
   AccountSettingsMutationResult,
 } from '@/settings/accountSettings/updateAccountSettingsV2WithRetry';
 import { printJsonEnvelope } from '@/cli/output/jsonEnvelope';
+import { fail } from '@happier-dev/cli-common/output';
 
 export type McpServersCommandErrorCode = 'invalid_arguments';
 
@@ -83,7 +83,7 @@ export async function reportMcpServersAccountSettingsMutation(
       error: { code, settlement },
     }, { exitCode: 1 });
   } else {
-    console.error(chalk.red('Error:'), `MCP Servers Settings mutation did not settle: ${result.status}`);
+    console.error(fail(`MCP Servers Settings mutation did not settle: ${result.status}`));
     process.exitCode = 1;
   }
   return false;

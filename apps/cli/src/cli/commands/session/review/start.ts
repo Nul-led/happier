@@ -8,6 +8,7 @@ import { wantsJson, printJsonEnvelope, writeJsonStdout } from '@/cli/output/json
 import { invalidCommandArguments } from '@/cli/commands/shared/argvFlags';
 import { SESSION_HELP_LINES } from '../shared/sessionCommandUsage';
 import { normalizeSessionStartActionResults } from '../shared/sessionStartActionResults';
+import { cmd, fail } from '@happier-dev/cli-common/output';
 
 function splitCsv(value: string | null): string[] {
   if (!value) return [];
@@ -62,7 +63,7 @@ export async function cmdSessionReviewStart(
       await printJsonEnvelope({ ok: false, kind: 'session_review_start', error: { code: 'not_authenticated' } });
       return;
     }
-    console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+    console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
     process.exit(1);
   }
 
@@ -99,7 +100,7 @@ export async function cmdSessionReviewStart(
       });
       return;
     }
-    console.error(chalk.red('Error:'), normalized.errorMessage ?? normalized.errorCode);
+    console.error(fail(normalized.errorMessage ?? normalized.errorCode));
     process.exit(1);
   }
 

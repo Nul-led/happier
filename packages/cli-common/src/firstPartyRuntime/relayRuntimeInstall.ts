@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { spawnBackgroundSync } from '../process/spawnBackgroundSync.js';
+import { runCommandStreaming } from '../process/runCommandStreaming.js';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, win32 as win32Path } from 'node:path';
 
@@ -1070,13 +1071,13 @@ async function runInstalledRelayRuntimeMigrations(params: Readonly<{
         await params.runMigrationCommand({ ...plan, cwd: params.installRoot, env: params.env });
         return;
     }
-    const completion = spawnBackgroundSync(plan.command, [...plan.args], {
+    await runCommandStreaming({
+        cmd: plan.command,
+        args: [...plan.args],
         cwd: params.installRoot,
         env: { ...process.env, ...params.env },
-        stdio: 'inherit',
+        context: 'relay-runtime database migration',
     });
-    if (completion.error) throw new Error(`[relay-runtime] database migration failed to start: ${completion.error.message}`);
-    if (completion.status !== 0) throw new Error(`[relay-runtime] database migration exited with status ${completion.status ?? 'unknown'}`);
 }
 
 async function reconcileInterruptedPersonalHomeUpdate(params: Readonly<{

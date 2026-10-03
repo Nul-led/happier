@@ -1,4 +1,5 @@
 export {
+  ACCENT_HEX,
   ansiEnabled,
   banner,
   blue,
@@ -39,8 +40,8 @@ export {
   type FrameTone,
   type TerminalStyles,
 } from './presentation.js';
-export { createStepPrinter, runCommandLogged } from './progress.js';
-export { createPlanetFrame, type PlanetCell, type PlanetFrame } from '@happier-dev/brand/planet';
+export { createStepPrinter, runCommandLogged, type StepPrinter } from './progress.js';
+export { createPlanetFrame, type PlanetCell, type PlanetFrame, type PlanetTheme } from '@happier-dev/brand/planet';
 export { createSetupChoicePrompt, renderSetupChoice, renderSetupWelcome, type SetupChoice, type SetupChoicePrompt, type SetupChoiceRenderOptions } from './planet.js';
 export { createHelpFormatter, helpFormatter, type HelpRow, type HelpRenderOptions } from './help.js';
 export { renderHelpPage, type HelpPageOptions, type HelpPageSection, type RenderHelpPageOptions } from './helpPage.js';

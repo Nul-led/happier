@@ -81,7 +81,7 @@ export async function handleRelayCliCommand(context: CommandContext): Promise<vo
       );
       return;
     }
-    console.error(errorFrame('Error:', [error instanceof Error ? error.message : 'Unknown error']));
+    console.error(errorFrame(error instanceof Error ? error.message : 'Unknown error'));
     if (isArgumentUsageError(error)) {
       showRelayHelp();
     }

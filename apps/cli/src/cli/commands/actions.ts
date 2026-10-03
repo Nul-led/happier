@@ -1,6 +1,5 @@
-import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
-import { renderHelpPage } from '@happier-dev/cli-common/output';
+import { definitionList, fail, renderHelpPage, sectionTitle } from '@happier-dev/cli-common/output';
 import {
   ActionDefinitionV1Schema,
   actionSpecToActionDefinitionV1,
@@ -516,7 +515,7 @@ export async function handleActionsCommand(
     };
     if (wantsJson(args)) await printJsonEnvelope({ ok: false, kind: `actions_${args[0] ?? 'help'}`, error: structured }, { exitCode: mapped.unexpected ? 2 : 1 });
     else {
-      console.error(chalk.red('Error:'), mapped.message ?? mapped.code);
+      console.error(fail(mapped.message ?? mapped.code));
       if ('candidates' in structured && Array.isArray(structured.candidates)) {
         console.error(`Candidates: ${structured.candidates.join(', ')}`);
       }

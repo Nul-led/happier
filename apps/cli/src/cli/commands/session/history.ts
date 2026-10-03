@@ -1,7 +1,6 @@
-import chalk from 'chalk';
 import { randomUUID } from 'node:crypto';
 
-import { ok } from '@happier-dev/cli-common/output';
+import { cmd, fail, ok } from '@happier-dev/cli-common/output';
 
 import type { StoredCredentials } from '@/persistence';
 import { readIntFlagValue, readFlagValue, hasFlag, hasFlagValue, readCommandPositionals } from '@/cli/commands/shared/argvFlags';
@@ -246,7 +245,7 @@ export async function cmdSessionHistory(
       await printJsonEnvelope({ ok: false, kind: 'session_history', error: { code: 'not_authenticated' } });
       return;
     }
-    console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+    console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
     process.exit(1);
   }
 

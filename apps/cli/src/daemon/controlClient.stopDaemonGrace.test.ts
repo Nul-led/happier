@@ -95,9 +95,6 @@ describe('stopDaemon: graceful wait before force kill', () => {
   });
 
   it('uses HAPPIER_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS to avoid force killing during slow shutdown', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-03-05T00:00:00.000Z'));
-
     const homeDir = createTempDirSync('happier-cli-daemon-stop-grace-');
     envScope.patch({
       HAPPIER_HOME_DIR: homeDir,
@@ -131,6 +128,10 @@ describe('stopDaemon: graceful wait before force kill', () => {
         if (Number(url.port) !== daemonPort) {
           throw new Error(`Unexpected fetch port: ${url.port}`);
         }
+        if (url.pathname === '/ping') {
+          if (!alive) throw Object.assign(new Error('Control closed'), { cause: { code: 'ECONNREFUSED' } });
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }
         if (url.pathname !== '/stop') {
           throw new Error(`Unexpected fetch path: ${url.pathname}`);
         }
@@ -147,6 +148,8 @@ describe('stopDaemon: graceful wait before force kill', () => {
         import('./controlClient'),
       ]);
       const { stopDaemon, stopDaemonHttp } = controlClient;
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-03-05T00:00:00.000Z'));
       expect(process.env.HAPPIER_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS).toBe('5000');
 
       const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: any) => {
@@ -156,7 +159,7 @@ describe('stopDaemon: graceful wait before force kill', () => {
 
         if (signal === 0) {
           if (!alive) {
-            throw new Error('ESRCH: process does not exist');
+            throw Object.assign(new Error('process does not exist'), { code: 'ESRCH' });
           }
           return undefined as any;
         }

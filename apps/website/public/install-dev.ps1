@@ -623,13 +623,6 @@ function Get-InstallerDisplayChannelLabel {
 
 $script:InstallerHeaderShown = $false
 
-function Test-InstallerBrailleArtAvailable {
-  return (
-    -not [string]::IsNullOrWhiteSpace($env:WT_SESSION) -or
-    -not [string]::IsNullOrWhiteSpace($env:TERM_PROGRAM)
-  )
-}
-
 function Test-InstallerRichHeaderAvailable {
   if ($env:TERM -eq "dumb") {
     return $false
@@ -637,7 +630,6 @@ function Test-InstallerRichHeaderAvailable {
   try {
     return (
       -not [Console]::IsOutputRedirected -and
-      (Test-InstallerBrailleArtAvailable) -and
       [Console]::WindowWidth -ge 76 -and
       [Console]::WindowHeight -ge 16
     )
@@ -647,8 +639,23 @@ function Test-InstallerRichHeaderAvailable {
   }
 }
 
+function Test-InstallerBrailleArtAvailable {
+  # The planet is drawn with Braille glyphs. The legacy console host has no font
+  # fallback for them; Windows Terminal (WT_SESSION) and hosts that identify
+  # themselves (TERM_PROGRAM, e.g. VS Code) do. Mirrors supportsBrailleArt() in
+  # packages/cli-common/src/output/planet.ts, which setup uses after this handoff.
+  return [bool]($env:WT_SESSION -or $env:TERM_PROGRAM)
+}
+
+# Same switch the CLI reads (packages/cli-common/src/output/planet.ts): the
+# installer and the setup it hands off to stay still together.
+function Test-InstallerAnimationDisabled {
+  $value = ([string]$env:HAPPIER_NO_ANIMATION).Trim().ToLowerInvariant()
+  return @("1", "true", "yes", "on") -contains $value
+}
+
 function Write-InstallerHeader {
-  if (-not (Test-InstallerRichHeaderAvailable)) {
+  if (-not (Test-InstallerRichHeaderAvailable) -or -not (Test-InstallerBrailleArtAvailable)) {
     Write-Host "Happier"
     Write-Host "Start coding anywhere. Continue anywhere."
     Write-Host "Download -> Verify -> Install"
@@ -659,33 +666,33 @@ function Write-InstallerHeader {
 
   # BEGIN GENERATED PLANET
   $rows = @(
-    "              $([char]0x2801)$([char]0x2804)$([char]0x2801)           ",
-    "        $([char]0x2801)$([char]0x2804)$([char]0x2801)$([char]0x2884)$([char]0x2885)$([char]0x2885)$([char]0x2895)$([char]0x2885)$([char]0x2895)$([char]0x2885)$([char]0x2805)$([char]0x2804)$([char]0x2801)$([char]0x2804)$([char]0x2801)     ",
-    "      $([char]0x2801)$([char]0x2804)$([char]0x2885)$([char]0x2895)$([char]0x28f5)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28f5)$([char]0x2895)$([char]0x2885)$([char]0x2805)$([char]0x2804)$([char]0x2801)   ",
-    "      $([char]0x2801)$([char]0x2884)$([char]0x28bd)$([char]0x28fd)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28ff)$([char]0x28ff)$([char]0x28f7)$([char]0x28d5)$([char]0x2885)$([char]0x2805)$([char]0x2804)$([char]0x2801) ",
-    "      $([char]0x2801)$([char]0x2894)$([char]0x289d)$([char]0x28bd)$([char]0x28ff)$([char]0x28fd)$([char]0x28ff)$([char]0x28bf)$([char]0x28bf)$([char]0x28ff)$([char]0x28fd)$([char]0x28bf)$([char]0x28ff)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28f5)$([char]0x2815)$([char]0x2805)$([char]0x2801) ",
-    "      $([char]0x2801)$([char]0x2805)$([char]0x2895)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x2895)$([char]0x2805)$([char]0x2801)$([char]0x2804)",
-    "      $([char]0x2801)$([char]0x2805)$([char]0x2815)$([char]0x28bd)$([char]0x28bf)$([char]0x28df)$([char]0x28ff)$([char]0x28df)$([char]0x28ff)$([char]0x28bf)$([char]0x28ff)$([char]0x28bf)$([char]0x28df)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28f7)$([char]0x289f)$([char]0x2805)$([char]0x2805)$([char]0x2804)",
-    "        $([char]0x2801)$([char]0x2895)$([char]0x289d)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x281d)$([char]0x2805)$([char]0x2801) ",
-    "        $([char]0x2801)$([char]0x2805)$([char]0x2815)$([char]0x288d)$([char]0x28bd)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28fd)$([char]0x28ff)$([char]0x28bf)$([char]0x289d)$([char]0x2815)$([char]0x2805)$([char]0x2801) ",
-    "          $([char]0x2801)$([char]0x2801)$([char]0x281d)$([char]0x289d)$([char]0x289d)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28f7)$([char]0x289f)$([char]0x2815)$([char]0x2805)$([char]0x2801) $([char]0x2801) ",
-    "            $([char]0x2801)$([char]0x2801) $([char]0x2815)$([char]0x281d)$([char]0x281d)$([char]0x281d)$([char]0x280d)$([char]0x2801)$([char]0x2805)$([char]0x2801) $([char]0x2801)   ",
-    "                $([char]0x2801) $([char]0x2801) $([char]0x2801) $([char]0x2801)     ",
+    "            $([char]0x2801)$([char]0x2804)$([char]0x2801)$([char]0x2804)$([char]0x2801)$([char]0x2804)$([char]0x2801)         ",
+    "        $([char]0x2801)$([char]0x2804)$([char]0x2805)$([char]0x2885)$([char]0x2895)$([char]0x2885)$([char]0x28d5)$([char]0x2885)$([char]0x2895)$([char]0x2885)$([char]0x2885)$([char]0x2885)$([char]0x2805)$([char]0x2804)$([char]0x2801)     ",
+    "      $([char]0x2801)$([char]0x2804)$([char]0x2895)$([char]0x28b5)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28fd)$([char]0x28ff)$([char]0x28f5)$([char]0x28f5)$([char]0x2885)$([char]0x2805)$([char]0x2804)$([char]0x2801)   ",
+    "      $([char]0x2801)$([char]0x2815)$([char]0x289c)$([char]0x28f5)$([char]0x28ff)$([char]0x28ff)$([char]0x28fd)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28b7)$([char]0x2885)$([char]0x2805)$([char]0x2804)$([char]0x2801) ",
+    "      $([char]0x2801)$([char]0x2895)$([char]0x289d)$([char]0x28b5)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28b7)$([char]0x2895)$([char]0x2805)$([char]0x2801)$([char]0x2804)",
+    "      $([char]0x2801)$([char]0x2805)$([char]0x289d)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28df)$([char]0x28fd)$([char]0x28ff)$([char]0x28fd)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28fd)$([char]0x28f7)$([char]0x28ff)$([char]0x28df)$([char]0x28ff)$([char]0x28df)$([char]0x2885)$([char]0x2805)$([char]0x2804)",
+    "      $([char]0x2801)$([char]0x2805)$([char]0x2815)$([char]0x28ad)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x2895)$([char]0x2805)$([char]0x2805)",
+    "        $([char]0x2801)$([char]0x2891)$([char]0x2889)$([char]0x28bd)$([char]0x28b7)$([char]0x28f7)$([char]0x28ff)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28fd)$([char]0x28ff)$([char]0x28ff)$([char]0x289f)$([char]0x2805)$([char]0x2805)$([char]0x2804)",
+    "        $([char]0x2801)$([char]0x2805)$([char]0x2815)$([char]0x2899)$([char]0x28bd)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28df)$([char]0x28ff)$([char]0x289f)$([char]0x2815)$([char]0x2805)$([char]0x2801) ",
+    "          $([char]0x2801)$([char]0x2805)$([char]0x281c)$([char]0x289d)$([char]0x289d)$([char]0x28bd)$([char]0x28bf)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x28ff)$([char]0x289f)$([char]0x281d)$([char]0x2805)$([char]0x2801)$([char]0x2805)$([char]0x2801) ",
+    "            $([char]0x2801)$([char]0x2801)$([char]0x2811)$([char]0x2815)$([char]0x2815)$([char]0x281d)$([char]0x281d)$([char]0x281d)$([char]0x2815)$([char]0x2805)$([char]0x2801)$([char]0x2805)$([char]0x2801) $([char]0x2801) ",
+    "                $([char]0x2801)$([char]0x2801)$([char]0x2801)$([char]0x2801)$([char]0x2801) $([char]0x2801)     ",
     "                            "
   )
   $rgbRows = @(
-    "              $([char]27)[38;2;143;109;59m$([char]0x2801)$([char]27)[38;2;156;118;62m$([char]0x2804)$([char]27)[38;2;142;108;58m$([char]0x2801)           $([char]27)[0m",
-    "        $([char]27)[38;2;152;113;62m$([char]0x2801)$([char]27)[38;2;179;128;72m$([char]0x2804)$([char]27)[38;2;166;126;65m$([char]0x2801)$([char]27)[38;2;218;159;81m$([char]0x2884)$([char]27)[38;2;211;157;78m$([char]0x2885)$([char]27)[38;2;216;162;79m$([char]0x2885)$([char]27)[38;2;211;158;78m$([char]0x2895)$([char]27)[38;2;212;159;78m$([char]0x2885)$([char]27)[38;2;200;150;75m$([char]0x2895)$([char]27)[38;2;194;146;73m$([char]0x2885)$([char]27)[38;2;176;133;68m$([char]0x2805)$([char]27)[38;2;177;133;68m$([char]0x2804)$([char]27)[38;2;150;114;61m$([char]0x2801)$([char]27)[38;2;156;119;63m$([char]0x2804)$([char]27)[38;2;140;107;58m$([char]0x2801)     $([char]27)[0m",
-    "      $([char]27)[38;2;158;102;70m$([char]0x2801)$([char]27)[38;2;199;121;85m$([char]0x2804)$([char]27)[38;2;184;129;84m$([char]0x2885)$([char]27)[38;2;177;149;95m$([char]0x2895)$([char]27)[38;2;222;194;122m$([char]0x28f5)$([char]27)[38;2;237;218;137m$([char]0x28ff)$([char]27)[38;2;252;232;145m$([char]0x28ff)$([char]27)[38;2;249;230;143m$([char]0x28ff)$([char]27)[38;2;253;233;145m$([char]0x28ff)$([char]27)[38;2;254;232;143m$([char]0x28ff)$([char]27)[38;2;253;229;140m$([char]0x28ff)$([char]27)[38;2;251;218;127m$([char]0x28ff)$([char]27)[38;2;242;202;113m$([char]0x28df)$([char]27)[38;2;239;196;107m$([char]0x28f5)$([char]27)[38;2;212;159;78m$([char]0x2895)$([char]27)[38;2;192;145;73m$([char]0x2885)$([char]27)[38;2;170;128;66m$([char]0x2805)$([char]27)[38;2;163;123;64m$([char]0x2804)$([char]27)[38;2;143;109;59m$([char]0x2801)   $([char]27)[0m",
-    "      $([char]27)[38;2;199;111;90m$([char]0x2801)$([char]27)[38;2;88;67;41m$([char]0x2884)$([char]27)[38;2;147;117;64m$([char]0x28bd)$([char]27)[38;2;193;154;79m$([char]0x28fd)$([char]27)[38;2;229;187;96m$([char]0x28ff)$([char]27)[38;2;251;210;108m$([char]0x28ff)$([char]27)[38;2;253;216;114m$([char]0x28ff)$([char]27)[38;2;255;222;121m$([char]0x28ff)$([char]27)[38;2;255;225;126m$([char]0x28ff)$([char]27)[38;2;255;227;130m$([char]0x28ff)$([char]27)[38;2;254;229;134m$([char]0x28ff)$([char]27)[38;2;254;230;137m$([char]0x28ff)$([char]27)[38;2;250;227;137m$([char]0x28df)$([char]27)[38;2;251;228;139m$([char]0x28ff)$([char]27)[38;2;254;227;136m$([char]0x28ff)$([char]27)[38;2;250;211;119m$([char]0x28f7)$([char]27)[38;2;225;172;89m$([char]0x28d5)$([char]27)[38;2;191;143;72m$([char]0x2885)$([char]27)[38;2;168;127;66m$([char]0x2805)$([char]27)[38;2;157;119;63m$([char]0x2804)$([char]27)[38;2;141;107;58m$([char]0x2801) $([char]27)[0m",
-    "      $([char]27)[38;2;35;29;27m$([char]0x2801)$([char]27)[38;2;92;56;37m$([char]0x2894)$([char]27)[38;2;139;88;47m$([char]0x289d)$([char]27)[38;2;183;116;55m$([char]0x28bd)$([char]27)[38;2;213;136;60m$([char]0x28ff)$([char]27)[38;2;238;156;64m$([char]0x28fd)$([char]27)[38;2;249;169;68m$([char]0x28ff)$([char]27)[38;2;251;179;71m$([char]0x28bf)$([char]27)[38;2;253;186;74m$([char]0x28bf)$([char]27)[38;2;253;187;75m$([char]0x28ff)$([char]27)[38;2;255;192;79m$([char]0x28fd)$([char]27)[38;2;255;200;85m$([char]0x28bf)$([char]27)[38;2;255;201;88m$([char]0x28ff)$([char]27)[38;2;255;207;96m$([char]0x28bf)$([char]27)[38;2;254;208;98m$([char]0x28ff)$([char]27)[38;2;255;212;105m$([char]0x28ff)$([char]27)[38;2;253;207;106m$([char]0x28df)$([char]27)[38;2;229;163;90m$([char]0x28f5)$([char]27)[38;2;189;135;74m$([char]0x2815)$([char]27)[38;2;168;123;68m$([char]0x2805)$([char]27)[38;2;151;115;61m$([char]0x2801) $([char]27)[0m",
-    "      $([char]27)[38;2;36;26;28m$([char]0x2801)$([char]27)[38;2;67;37;35m$([char]0x2805)$([char]27)[38;2;116;54;45m$([char]0x2895)$([char]27)[38;2;167;77;52m$([char]0x28bd)$([char]27)[38;2;199;94;55m$([char]0x28bf)$([char]27)[38;2;221;105;57m$([char]0x28ff)$([char]27)[38;2;235;115;56m$([char]0x28ff)$([char]27)[38;2;244;124;54m$([char]0x28ff)$([char]27)[38;2;246;130;53m$([char]0x28ff)$([char]27)[38;2;247;135;54m$([char]0x28ff)$([char]27)[38;2;245;139;54m$([char]0x28ff)$([char]27)[38;2;247;144;55m$([char]0x28ff)$([char]27)[38;2;248;149;56m$([char]0x28ff)$([char]27)[38;2;249;154;58m$([char]0x28ff)$([char]27)[38;2;250;160;61m$([char]0x28ff)$([char]27)[38;2;253;168;66m$([char]0x28ff)$([char]27)[38;2;254;178;75m$([char]0x28ff)$([char]27)[38;2;252;188;94m$([char]0x28ff)$([char]27)[38;2;207;130;86m$([char]0x2895)$([char]27)[38;2;179;118;76m$([char]0x2805)$([char]27)[38;2;157;108;67m$([char]0x2801)$([char]27)[38;2;144;97;64m$([char]0x2804)$([char]27)[0m",
-    "      $([char]27)[38;2;26;21;27m$([char]0x2801)$([char]27)[38;2;41;25;34m$([char]0x2805)$([char]27)[38;2;79;34;49m$([char]0x2815)$([char]27)[38;2;114;43;63m$([char]0x28bd)$([char]27)[38;2;147;53;71m$([char]0x28bf)$([char]27)[38;2;172;61;76m$([char]0x28df)$([char]27)[38;2;196;69;79m$([char]0x28ff)$([char]27)[38;2;212;76;76m$([char]0x28df)$([char]27)[38;2;220;80;73m$([char]0x28ff)$([char]27)[38;2;226;87;67m$([char]0x28bf)$([char]27)[38;2;228;89;66m$([char]0x28ff)$([char]27)[38;2;232;95;61m$([char]0x28bf)$([char]27)[38;2;230;97;61m$([char]0x28df)$([char]27)[38;2;235;102;59m$([char]0x28ff)$([char]27)[38;2;236;108;58m$([char]0x28ff)$([char]27)[38;2;239;117;59m$([char]0x28ff)$([char]27)[38;2;244;131;64m$([char]0x28df)$([char]27)[38;2;247;154;79m$([char]0x28f7)$([char]27)[38;2;210;117;93m$([char]0x289f)$([char]27)[38;2;181;105;82m$([char]0x2805)$([char]27)[38;2;156;94;72m$([char]0x2805)$([char]27)[38;2;140;84;67m$([char]0x2804)$([char]27)[0m",
-    "        $([char]27)[38;2;36;24;43m$([char]0x2801)$([char]27)[38;2;42;30;62m$([char]0x2895)$([char]27)[38;2;65;35;81m$([char]0x289d)$([char]27)[38;2;78;39;95m$([char]0x28bd)$([char]27)[38;2;102;43;108m$([char]0x28bf)$([char]27)[38;2;111;46;115m$([char]0x28ff)$([char]27)[38;2;125;48;114m$([char]0x28ff)$([char]27)[38;2;138;49;110m$([char]0x28ff)$([char]27)[38;2;149;51;106m$([char]0x28ff)$([char]27)[38;2;160;53;102m$([char]0x28ff)$([char]27)[38;2;171;56;97m$([char]0x28df)$([char]27)[38;2;178;60;94m$([char]0x28ff)$([char]27)[38;2;189;66;92m$([char]0x28ff)$([char]27)[38;2;196;75;89m$([char]0x28ff)$([char]27)[38;2;207;92;89m$([char]0x28ff)$([char]27)[38;2;226;132;98m$([char]0x28ff)$([char]27)[38;2;196;95;94m$([char]0x281d)$([char]27)[38;2;169;84;83m$([char]0x2805)$([char]27)[38;2;151;82;74m$([char]0x2801) $([char]27)[0m",
-    "        $([char]27)[38;2;20;23;33m$([char]0x2801)$([char]27)[38;2;22;28;46m$([char]0x2805)$([char]27)[38;2;26;38;72m$([char]0x2815)$([char]27)[38;2;30;47;96m$([char]0x288d)$([char]27)[38;2;33;57;124m$([char]0x28bd)$([char]27)[38;2;35;62;141m$([char]0x28bd)$([char]27)[38;2;38;66;157m$([char]0x28bf)$([char]27)[38;2;41;68;167m$([char]0x28ff)$([char]27)[38;2;46;67;169m$([char]0x28ff)$([char]27)[38;2;53;65;166m$([char]0x28ff)$([char]27)[38;2;60;62;160m$([char]0x28ff)$([char]27)[38;2;71;60;152m$([char]0x28ff)$([char]27)[38;2;84;63;145m$([char]0x28fd)$([char]27)[38;2;104;70;136m$([char]0x28ff)$([char]27)[38;2;153;90;121m$([char]0x28bf)$([char]27)[38;2;186;85;105m$([char]0x289d)$([char]27)[38;2;167;68;91m$([char]0x2815)$([char]27)[38;2;149;63;81m$([char]0x2805)$([char]27)[38;2;138;64;74m$([char]0x2801) $([char]27)[0m",
-    "          $([char]27)[38;2;21;28;43m$([char]0x2801)$([char]27)[38;2;24;38;64m$([char]0x2801)$([char]27)[38;2;26;49;90m$([char]0x281d)$([char]27)[38;2;26;55;106m$([char]0x289d)$([char]27)[38;2;28;67;133m$([char]0x289d)$([char]27)[38;2;30;75;151m$([char]0x28bd)$([char]27)[38;2;33;86;173m$([char]0x28bf)$([char]27)[38;2;35;91;184m$([char]0x28ff)$([char]27)[38;2;39;97;193m$([char]0x28ff)$([char]27)[38;2;46;100;192m$([char]0x28ff)$([char]27)[38;2;64;109;182m$([char]0x28f7)$([char]27)[38;2;96;110;165m$([char]0x289f)$([char]27)[38;2;142;95;125m$([char]0x2815)$([char]27)[38;2;134;64;102m$([char]0x2805)$([char]27)[38;2;133;60;90m$([char]0x2801) $([char]27)[38;2;117;52;74m$([char]0x2801) $([char]27)[0m",
-    "            $([char]27)[38;2;18;23;38m$([char]0x2801)$([char]27)[38;2;17;27;52m$([char]0x2801) $([char]27)[38;2;17;33;72m$([char]0x2815)$([char]27)[38;2;19;43;97m$([char]0x281d)$([char]27)[38;2;21;50;110m$([char]0x281d)$([char]27)[38;2;31;60;117m$([char]0x281d)$([char]27)[38;2;63;82;145m$([char]0x280d)$([char]27)[38;2;118;74;141m$([char]0x2801)$([char]27)[38;2;95;62;116m$([char]0x2805)$([char]27)[38;2;102;60;107m$([char]0x2801) $([char]27)[38;2;93;52;87m$([char]0x2801)   $([char]27)[0m",
-    "                $([char]27)[38;2;51;66;153m$([char]0x2801) $([char]27)[38;2;58;61;132m$([char]0x2801) $([char]27)[38;2;61;55;112m$([char]0x2801) $([char]27)[38;2;62;50;97m$([char]0x2801)     $([char]27)[0m",
+    "            $([char]27)[38;2;143;109;59m$([char]0x2801)$([char]27)[38;2;158;120;63m$([char]0x2804)$([char]27)[38;2;144;110;59m$([char]0x2801)$([char]27)[38;2;157;120;63m$([char]0x2804)$([char]27)[38;2;143;109;59m$([char]0x2801)$([char]27)[38;2;152;116;61m$([char]0x2804)$([char]27)[38;2;139;106;58m$([char]0x2801)         $([char]27)[0m",
+    "        $([char]27)[38;2;153;114;63m$([char]0x2801)$([char]27)[38;2;182;130;73m$([char]0x2804)$([char]27)[38;2;181;134;71m$([char]0x2805)$([char]27)[38;2;206;151;78m$([char]0x2885)$([char]27)[38;2;211;157;78m$([char]0x2895)$([char]27)[38;2;216;173;92m$([char]0x2885)$([char]27)[38;2;222;172;89m$([char]0x28d5)$([char]27)[38;2;216;162;79m$([char]0x2885)$([char]27)[38;2;203;153;76m$([char]0x2895)$([char]27)[38;2;198;149;74m$([char]0x2885)$([char]27)[38;2;186;140;71m$([char]0x2885)$([char]27)[38;2;175;132;68m$([char]0x2885)$([char]27)[38;2;160;121;64m$([char]0x2805)$([char]27)[38;2;158;120;63m$([char]0x2804)$([char]27)[38;2;141;108;58m$([char]0x2801)     $([char]27)[0m",
+    "      $([char]27)[38;2;160;103;71m$([char]0x2801)$([char]27)[38;2;203;123;87m$([char]0x2804)$([char]27)[38;2;199;137;87m$([char]0x2895)$([char]27)[38;2;184;158;101m$([char]0x28b5)$([char]27)[38;2;220;194;121m$([char]0x28ff)$([char]27)[38;2;239;220;139m$([char]0x28ff)$([char]27)[38;2;252;232;145m$([char]0x28ff)$([char]0x28df)$([char]27)[38;2;254;234;145m$([char]0x28ff)$([char]27)[38;2;253;232;144m$([char]0x28ff)$([char]27)[38;2;255;232;142m$([char]0x28ff)$([char]27)[38;2;253;222;132m$([char]0x28fd)$([char]27)[38;2;247;209;118m$([char]0x28ff)$([char]27)[38;2;241;198;108m$([char]0x28f5)$([char]27)[38;2;223;171;87m$([char]0x28f5)$([char]27)[38;2;196;147;74m$([char]0x2885)$([char]27)[38;2;172;130;67m$([char]0x2805)$([char]27)[38;2;165;125;65m$([char]0x2804)$([char]27)[38;2;144;110;59m$([char]0x2801)   $([char]27)[0m",
+    "      $([char]27)[38;2;203;113;91m$([char]0x2801)$([char]27)[38;2;76;63;41m$([char]0x2815)$([char]27)[38;2;149;118;64m$([char]0x289c)$([char]27)[38;2;188;148;74m$([char]0x28f5)$([char]27)[38;2;230;187;95m$([char]0x28ff)$([char]27)[38;2;247;205;105m$([char]0x28ff)$([char]27)[38;2;253;214;111m$([char]0x28fd)$([char]27)[38;2;255;221;119m$([char]0x28ff)$([char]27)[38;2;255;225;124m$([char]0x28ff)$([char]27)[38;2;255;227;129m$([char]0x28ff)$([char]27)[38;2;255;229;134m$([char]0x28ff)$([char]27)[38;2;255;231;137m$([char]0x28df)$([char]27)[38;2;255;233;142m$([char]0x28bf)$([char]27)[38;2;255;232;140m$([char]0x28ff)$([char]27)[38;2;254;228;137m$([char]0x28ff)$([char]27)[38;2;248;207;116m$([char]0x28ff)$([char]27)[38;2;222;164;82m$([char]0x28b7)$([char]27)[38;2;194;145;73m$([char]0x2885)$([char]27)[38;2;170;129;66m$([char]0x2805)$([char]27)[38;2;159;121;63m$([char]0x2804)$([char]27)[38;2;142;108;58m$([char]0x2801) $([char]27)[0m",
+    "      $([char]27)[38;2;39;31;28m$([char]0x2801)$([char]27)[38;2;92;58;38m$([char]0x2895)$([char]27)[38;2;143;90;48m$([char]0x289d)$([char]27)[38;2;188;116;54m$([char]0x28b5)$([char]27)[38;2;211;134;59m$([char]0x28ff)$([char]27)[38;2;237;155;64m$([char]0x28ff)$([char]27)[38;2;250;169;68m$([char]0x28ff)$([char]27)[38;2;251;175;69m$([char]0x28ff)$([char]27)[38;2;254;182;71m$([char]0x28ff)$([char]27)[38;2;253;186;75m$([char]0x28ff)$([char]27)[38;2;255;192;79m$([char]0x28ff)$([char]27)[38;2;255;196;82m$([char]0x28ff)$([char]27)[38;2;255;200;87m$([char]0x28ff)$([char]27)[38;2;255;204;92m$([char]0x28ff)$([char]27)[38;2;255;208;97m$([char]0x28ff)$([char]27)[38;2;255;211;103m$([char]0x28ff)$([char]27)[38;2;254;207;106m$([char]0x28ff)$([char]27)[38;2;231;165;92m$([char]0x28b7)$([char]27)[38;2;192;135;76m$([char]0x2895)$([char]27)[38;2;171;124;69m$([char]0x2805)$([char]27)[38;2;152;116;62m$([char]0x2801)$([char]27)[38;2;144;107;60m$([char]0x2804)$([char]27)[0m",
+    "      $([char]27)[38;2;38;27;28m$([char]0x2801)$([char]27)[38;2;69;38;35m$([char]0x2805)$([char]27)[38;2;125;59;46m$([char]0x289d)$([char]27)[38;2;168;77;52m$([char]0x28bd)$([char]27)[38;2;201;94;55m$([char]0x28bf)$([char]27)[38;2;220;104;56m$([char]0x28ff)$([char]27)[38;2;241;118;56m$([char]0x28df)$([char]27)[38;2;245;124;54m$([char]0x28fd)$([char]27)[38;2;245;129;53m$([char]0x28ff)$([char]27)[38;2;248;134;54m$([char]0x28fd)$([char]27)[38;2;248;139;54m$([char]0x28ff)$([char]27)[38;2;249;145;55m$([char]0x28ff)$([char]27)[38;2;249;149;56m$([char]0x28ff)$([char]27)[38;2;253;155;58m$([char]0x28fd)$([char]27)[38;2;253;159;60m$([char]0x28f7)$([char]27)[38;2;254;168;66m$([char]0x28ff)$([char]27)[38;2;254;178;74m$([char]0x28df)$([char]27)[38;2;253;186;91m$([char]0x28ff)$([char]27)[38;2;212;133;88m$([char]0x28df)$([char]27)[38;2;179;115;77m$([char]0x2885)$([char]27)[38;2;159;107;69m$([char]0x2805)$([char]27)[38;2;145;97;64m$([char]0x2804)$([char]27)[0m",
+    "      $([char]27)[38;2;26;21;27m$([char]0x2801)$([char]27)[38;2;44;25;36m$([char]0x2805)$([char]27)[38;2;79;34;49m$([char]0x2815)$([char]27)[38;2;113;43;63m$([char]0x28ad)$([char]27)[38;2;150;53;72m$([char]0x28bf)$([char]27)[38;2;175;61;78m$([char]0x28ff)$([char]27)[38;2;196;69;78m$([char]0x28ff)$([char]27)[38;2;214;77;74m$([char]0x28bf)$([char]27)[38;2;219;80;73m$([char]0x28ff)$([char]27)[38;2;224;84;69m$([char]0x28ff)$([char]27)[38;2;224;87;66m$([char]0x28ff)$([char]27)[38;2;228;92;63m$([char]0x28ff)$([char]27)[38;2;233;97;61m$([char]0x28ff)$([char]27)[38;2;237;103;60m$([char]0x28ff)$([char]27)[38;2;240;109;59m$([char]0x28ff)$([char]27)[38;2;242;117;60m$([char]0x28ff)$([char]27)[38;2;245;130;64m$([char]0x28ff)$([char]27)[38;2;249;155;78m$([char]0x28ff)$([char]27)[38;2;214;117;95m$([char]0x28ff)$([char]27)[38;2;176;101;81m$([char]0x2895)$([char]27)[38;2;158;95;73m$([char]0x2805)$([char]27)[38;2;143;88;67m$([char]0x2805)$([char]27)[0m",
+    "        $([char]27)[38;2;38;25;44m$([char]0x2801)$([char]27)[38;2;47;31;65m$([char]0x2891)$([char]27)[38;2;74;37;82m$([char]0x2889)$([char]27)[38;2;83;40;99m$([char]0x28bd)$([char]27)[38;2;93;42;108m$([char]0x28b7)$([char]27)[38;2;104;45;115m$([char]0x28f7)$([char]27)[38;2;126;48;114m$([char]0x28ff)$([char]27)[38;2;145;50;106m$([char]0x28bf)$([char]27)[38;2;150;51;106m$([char]0x28ff)$([char]27)[38;2;160;53;101m$([char]0x28ff)$([char]27)[38;2;168;56;97m$([char]0x28ff)$([char]27)[38;2;179;60;94m$([char]0x28ff)$([char]27)[38;2;188;66;91m$([char]0x28ff)$([char]27)[38;2;195;75;89m$([char]0x28fd)$([char]27)[38;2;210;92;89m$([char]0x28ff)$([char]27)[38;2;227;127;97m$([char]0x28ff)$([char]27)[38;2;198;93;96m$([char]0x289f)$([char]27)[38;2;172;86;85m$([char]0x2805)$([char]27)[38;2;150;78;75m$([char]0x2805)$([char]27)[38;2;134;70;69m$([char]0x2804)$([char]27)[0m",
+    "        $([char]27)[38;2;20;23;34m$([char]0x2801)$([char]27)[38;2;22;28;46m$([char]0x2805)$([char]27)[38;2;26;39;75m$([char]0x2815)$([char]27)[38;2;32;50;106m$([char]0x2899)$([char]27)[38;2;33;57;126m$([char]0x28bd)$([char]27)[38;2;36;65;149m$([char]0x28bd)$([char]27)[38;2;38;65;157m$([char]0x28bf)$([char]27)[38;2;42;70;171m$([char]0x28ff)$([char]27)[38;2;47;67;169m$([char]0x28ff)$([char]27)[38;2;54;65;166m$([char]0x28ff)$([char]27)[38;2;61;61;159m$([char]0x28ff)$([char]27)[38;2;72;60;151m$([char]0x28ff)$([char]27)[38;2;85;61;143m$([char]0x28ff)$([char]27)[38;2;106;68;135m$([char]0x28df)$([char]27)[38;2;147;89;125m$([char]0x28ff)$([char]27)[38;2;190;95;108m$([char]0x289f)$([char]27)[38;2;170;69;92m$([char]0x2815)$([char]27)[38;2;151;64;82m$([char]0x2805)$([char]27)[38;2;140;65;74m$([char]0x2801) $([char]27)[0m",
+    "          $([char]27)[38;2;21;28;44m$([char]0x2801)$([char]27)[38;2;22;32;54m$([char]0x2805)$([char]27)[38;2;25;47;87m$([char]0x281c)$([char]27)[38;2;26;56;108m$([char]0x289d)$([char]27)[38;2;28;68;136m$([char]0x289d)$([char]27)[38;2;30;76;152m$([char]0x28bd)$([char]27)[38;2;33;88;178m$([char]0x28bf)$([char]27)[38;2;35;91;185m$([char]0x28ff)$([char]27)[38;2;38;95;191m$([char]0x28ff)$([char]27)[38;2;45;99;191m$([char]0x28ff)$([char]27)[38;2;61;106;185m$([char]0x28ff)$([char]27)[38;2;91;106;165m$([char]0x289f)$([char]27)[38;2;143;86;125m$([char]0x281d)$([char]27)[38;2;137;65;103m$([char]0x2805)$([char]27)[38;2;136;61;91m$([char]0x2801)$([char]27)[38;2;116;54;81m$([char]0x2805)$([char]27)[38;2;119;52;75m$([char]0x2801) $([char]27)[0m",
+    "            $([char]27)[38;2;18;23;38m$([char]0x2801)$([char]27)[38;2;17;28;55m$([char]0x2801)$([char]27)[38;2;17;32;68m$([char]0x2811)$([char]27)[38;2;17;34;75m$([char]0x2815)$([char]27)[38;2;18;41;92m$([char]0x2815)$([char]27)[38;2;22;52;115m$([char]0x281d)$([char]27)[38;2;31;64;126m$([char]0x281d)$([char]27)[38;2;74;80;147m$([char]0x281d)$([char]27)[38;2;89;78;129m$([char]0x2815)$([char]27)[38;2;98;63;118m$([char]0x2805)$([char]27)[38;2;104;61;108m$([char]0x2801)$([char]27)[38;2;89;54;95m$([char]0x2805)$([char]27)[38;2;94;53;88m$([char]0x2801) $([char]27)[38;2;91;49;77m$([char]0x2801) $([char]27)[0m",
+    "                $([char]27)[38;2;53;68;156m$([char]0x2801)$([char]27)[38;2;57;65;146m$([char]0x2801)$([char]27)[38;2;60;62;134m$([char]0x2801)$([char]27)[38;2;61;59;123m$([char]0x2801)$([char]27)[38;2;62;55;113m$([char]0x2801) $([char]27)[38;2;64;51;98m$([char]0x2801)     $([char]27)[0m",
     "                            $([char]27)[0m"
   )
   # END GENERATED PLANET
@@ -735,18 +742,6 @@ function Write-InstallerHeader {
   }
   Write-Host ""
   $script:InstallerHeaderShown = $true
-}
-
-function Write-InstallerStage {
-  param (
-    [Parameter(Mandatory = $true)] [string] $Name
-  )
-
-  if ((Test-InstallerRichHeaderAvailable) -and -not $env:NO_COLOR) {
-    Write-Host ("[{0}]" -f $Name) -ForegroundColor Cyan
-    return
-  }
-  Write-Host ("[{0}]" -f $Name)
 }
 
 function Write-InstallerBullet {
@@ -1639,6 +1634,8 @@ function Invoke-PostInstallAction {
   }
 }
 
+# After the installer's own header, setup continues the planet instead of
+# replaying its intro. The marker is scoped to the setup child and restored.
 function Invoke-InstallerSetupCommand {
   param (
     [Parameter(Mandatory = $true)] [string] $CliPath,
@@ -1880,7 +1877,7 @@ function Invoke-InstallerWebRequestWithRetry {
 
   $previousProgressPreference = $ProgressPreference
   try {
-    if ($env:HAPPIER_NO_ANIMATION -or -not (Test-InstallerRichHeaderAvailable)) {
+    if ((Test-InstallerAnimationDisabled) -or -not (Test-InstallerRichHeaderAvailable)) {
       $ProgressPreference = "SilentlyContinue"
     }
 
@@ -2710,6 +2707,8 @@ function Resolve-MinisignPublicKey {
   }
   Invoke-InstallerWebRequestWithRetry -Uri $MinisignPubKeyUrl -OutFile $TargetPath
 }
+
+Write-InstallerHeader
 
 $tag = if ($Version) { "cli-v$Version" } elseif ($Channel -eq "preview") { "cli-preview" } elseif ($Channel -eq "publicdev") { "cli-dev" } else { "cli-stable" }
 Write-InstallerHeader

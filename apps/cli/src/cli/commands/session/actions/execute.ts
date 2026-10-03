@@ -17,6 +17,7 @@ import {
   runWithServerHttpBaseUrl,
 } from '@/api/client/serverHttpBaseUrl';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { cmd, fail } from '@happier-dev/cli-common/output';
 
 type CliActionExecutorLike = Pick<ReturnType<typeof createCliActionExecutor>, 'execute'>;
 type CliActionExecutorParams = Parameters<typeof createCliActionExecutor>[0];
@@ -101,7 +102,7 @@ export async function cmdSessionActionsExecute(
       await printJsonEnvelope({ ok: false, kind: 'session_actions_execute', error: { code: 'not_authenticated' } });
       return;
     }
-    console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+    console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
     process.exit(1);
   }
 

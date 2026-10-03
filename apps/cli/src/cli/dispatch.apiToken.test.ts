@@ -427,7 +427,7 @@ describe('dispatchCli API Token globals', () => {
   });
 
   it.each([
-    ['root help', ['--help'], 'happier - AI CLI'],
+    ['root help', ['--help'], 'Run, watch and steer your coding agents'],
     ['nested help', ['actions', '--help'], 'happier actions'],
     ['version', ['--version'], packageJson.version],
     ['completion', ['completion', 'candidates', '--', 'spa'], 'spawn'],

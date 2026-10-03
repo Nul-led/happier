@@ -69,7 +69,8 @@ describe('dispatchCli root help', () => {
 
     expect(defaultHandlerSpy).not.toHaveBeenCalled();
     expect(ensureMergedAgentCommandRegistryLoadedSpy).toHaveBeenCalled();
-    expect(output.logs).toContainEqual(expect.stringContaining('happier - AI CLI On the Go'));
+    // The brand banner, like every other titled page.
+    expect(output.logs.join('\n').replace(/\u001b\[[0-9;]*m/gu, '')).toMatch(/^Happier\nRun, watch and steer your coding agents from any device\.$/mu);
     expect(output.logs).toContainEqual(expect.stringContaining('happier codex'));
     expect(output.logs).toContainEqual(expect.stringContaining('happier credentials'));
     expect(output.logs).toContainEqual(expect.stringContaining('happier secrets'));

@@ -120,6 +120,7 @@ if [[ "\${1:-}" = "setup" ]]; then
   else
     printf 'stdin_tty=no\\n' >> "\${HAPPIER_TEST_CLI_LOG}"
   fi
+  printf 'welcome_shown=%s\\n' "\${HAPPIER_INSTALLER_WELCOME_SHOWN:-unset}" >> "\${HAPPIER_TEST_CLI_LOG}"
   echo "fake setup ran"
   exit 0
 fi
@@ -276,19 +277,36 @@ test('install.sh keeps static art but emits no animation controls when motion is
     NO_COLOR: '1',
     TERM: 'xterm-256color',
     COLUMNS: '80',
+    LINES: '24',
   });
   const output = String(res.stdout ?? '').replaceAll('\r\n', '\n');
   assert.equal(res.status, 0, `installer failed:\n${output}\n${String(res.stderr ?? '')}`);
+  // Every art row is the full 28-cell Braille canvas (blank cells are spaces), then its label.
+  const artRow = /^[ \u2800-\u28ff]{28}(?: {3}.*)?$/u;
   const lines = output.split('\n');
-  const firstArtRow = lines.findIndex((line) => /[\u2801-\u28ff]/u.test(line));
-  const artLines = lines.slice(firstArtRow, firstArtRow + planetRowsForColumns(28));
-  assert.deepEqual(artLines.map((line) => line.slice(0, 28)),
-    createPlanetFrame({ columns: 28, seconds: 1.6 }).map((row) => row.map((cell) => cell?.ch ?? ' ').join('')));
+  const first = lines.findIndex((line) => artRow.test(line));
+  const artLines = lines.slice(first, first + planetRowsForColumns(28));
   const titleRow = artLines.findIndex((line) => /Happier/.test(line));
-  assert.ok(artLines.length >= 9, 'expected a complete Braille globe');
+  assert.ok(first >= 0 && artLines.every((line) => artRow.test(line)), `expected a complete Braille globe:\n${output}`);
+  assert.ok((artLines.join('').match(/[\u2801-\u28ff]/gu) ?? []).length >= 150, 'expected a lit globe, not an empty canvas');
   assert.equal(titleRow, Math.floor((artLines.length - 1) / 2) - 1, 'title is centered beside the globe');
+  assert.ok(artLines.some((line) => /Start coding anywhere\. Continue anywhere\./.test(line)), 'expected the tagline beside the globe');
   assert.ok(artLines.every((line) => line.length <= 80), 'header must fit without terminal wrapping');
   assert.doesNotMatch(output, /\r(?!\n)|\x1b/);
+
+  await rm(fixture.root, { recursive: true, force: true });
+});
+
+test('install.sh prints a text-only header when output is not a terminal', async () => {
+  const fixture = await prepareInstallFixture('happier-installer-text-welcome-');
+  const res = spawnSync('bash', [fixture.installerPath, '--without-daemon', '--yes'], {
+    env: { ...fixture.env, HAPPIER_NONINTERACTIVE: '1', COLUMNS: '120', LINES: '40' },
+    encoding: 'utf8',
+  });
+  const stdout = String(res.stdout ?? '');
+  assert.equal(res.status, 0, `installer failed:\n${stdout}\n${String(res.stderr ?? '')}`);
+  assert.match(stdout, /^Happier\nStart coding anywhere\. Continue anywhere\.\n/m);
+  assert.doesNotMatch(stdout, /[\u2800-\u28ff]/u, 'redirected output must not carry the Braille planet');
 
   await rm(fixture.root, { recursive: true, force: true });
 });

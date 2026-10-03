@@ -26,17 +26,22 @@ const {
   updateSettingsMock: vi.fn(async (_mutate: unknown) => undefined),
 }));
 
-vi.mock('node:fs', () => ({
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
   existsSync: () => true,
   rmSync: (...args: unknown[]) => rmSyncMock(...args),
 }));
 
-vi.mock('node:readline', () => ({
-  createInterface: () => ({
-    question: (_prompt: string, resolve: (answer: string) => void) => resolve('y'),
-    close: vi.fn(),
-  }),
-}));
+// The terminal is a system boundary: a readline interface that answers "y" to the confirmation.
+vi.mock('node:readline', async () => {
+  const { EventEmitter } = await import('node:events');
+  return {
+    createInterface: () => Object.assign(new EventEmitter(), {
+      question: (_prompt: string, resolve: (answer: string) => void) => resolve('y'),
+      close: vi.fn(),
+    }),
+  };
+});
 
 vi.mock('@/persistence', () => ({
   clearCredentials: () => clearCredentialsMock(),

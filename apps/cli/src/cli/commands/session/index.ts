@@ -1,4 +1,3 @@
-import chalk from 'chalk';
 
 import type { CommandContext } from '@/cli/commandRegistry';
 
@@ -6,6 +5,7 @@ export { handleSessionCommand } from './handleSessionCommand';
 
 import { handleSessionCommand } from './handleSessionCommand';
 import { formatSessionCommandError } from './sessionCommandErrorPresentation';
+import { fail } from '@happier-dev/cli-common/output';
 
 export async function handleSessionCliCommand(context: CommandContext): Promise<void> {
   const isHistoryFollow = (
@@ -23,7 +23,7 @@ export async function handleSessionCliCommand(context: CommandContext): Promise<
       ...(context.signal ? { signal: context.signal } : controller ? { signal: controller.signal } : {}),
     });
   } catch (error) {
-    console.error(chalk.red('Error:'), formatSessionCommandError(error));
+    console.error(fail(formatSessionCommandError(error)));
     if (process.env.DEBUG) {
       console.error(error);
     }

@@ -248,7 +248,11 @@ async function promptForExistingHomeTargetArgs(
             maxAttempts: 3,
             promptInputFn,
             ...(connectionPrompt.renderMessage
-                ? { animate: connectionPrompt.animate === true, renderMessage: connectionPrompt.renderMessage }
+                ? {
+                    animate: connectionPrompt.animate === true,
+                    renderMessage: connectionPrompt.renderMessage,
+                    ...('intervalMs' in connectionPrompt && connectionPrompt.intervalMs !== undefined ? { intervalMs: connectionPrompt.intervalMs } : {}),
+                }
                 : {}),
         },
     );
@@ -776,7 +780,11 @@ export async function handleSetupCommand(
                 maxAttempts: 3,
                 promptInputFn,
                 ...(unavailablePrompt.renderMessage
-                    ? { animate: unavailablePrompt.animate === true, renderMessage: unavailablePrompt.renderMessage }
+                    ? {
+                        animate: unavailablePrompt.animate === true,
+                        renderMessage: unavailablePrompt.renderMessage,
+                        ...('intervalMs' in unavailablePrompt && unavailablePrompt.intervalMs !== undefined ? { intervalMs: unavailablePrompt.intervalMs } : {}),
+                    }
                     : {}),
             },
         );
@@ -839,7 +847,11 @@ export async function handleSetupCommand(
                     maxAttempts: 3,
                     promptInputFn,
                     ...('renderMessage' in setupChoicePrompt && setupChoicePrompt.renderMessage
-                        ? { animate: setupChoicePrompt.animate === true, renderMessage: setupChoicePrompt.renderMessage }
+                        ? {
+                            animate: setupChoicePrompt.animate === true,
+                            renderMessage: setupChoicePrompt.renderMessage,
+                            ...('intervalMs' in setupChoicePrompt && setupChoicePrompt.intervalMs !== undefined ? { intervalMs: setupChoicePrompt.intervalMs } : {}),
+                        }
                         : {}),
                 },
             );
@@ -974,7 +986,11 @@ export async function handleSetupCommand(
                     maxAttempts: 3,
                     promptInputFn,
                     ...(retryPrompt.renderMessage
-                        ? { animate: retryPrompt.animate === true, renderMessage: retryPrompt.renderMessage }
+                        ? {
+                            animate: retryPrompt.animate === true,
+                            renderMessage: retryPrompt.renderMessage,
+                            ...('intervalMs' in retryPrompt && retryPrompt.intervalMs !== undefined ? { intervalMs: retryPrompt.intervalMs } : {}),
+                        }
                         : {}),
                 },
             );
@@ -1008,7 +1024,11 @@ export async function handleSetupCommand(
                         maxAttempts: 3,
                         promptInputFn,
                         ...(recoveryPrompt.renderMessage
-                            ? { animate: recoveryPrompt.animate === true, renderMessage: recoveryPrompt.renderMessage }
+                            ? {
+                                animate: recoveryPrompt.animate === true,
+                                renderMessage: recoveryPrompt.renderMessage,
+                                ...('intervalMs' in recoveryPrompt && recoveryPrompt.intervalMs !== undefined ? { intervalMs: recoveryPrompt.intervalMs } : {}),
+                            }
                             : {}),
                     },
                 );
@@ -1084,7 +1104,11 @@ export async function handleSetupCommand(
                     maxAttempts: 3,
                     promptInputFn,
                     ...(recoveryPrompt.renderMessage
-                        ? { animate: recoveryPrompt.animate === true, renderMessage: recoveryPrompt.renderMessage }
+                        ? {
+                            animate: recoveryPrompt.animate === true,
+                            renderMessage: recoveryPrompt.renderMessage,
+                            ...('intervalMs' in recoveryPrompt && recoveryPrompt.intervalMs !== undefined ? { intervalMs: recoveryPrompt.intervalMs } : {}),
+                        }
                         : {}),
                 },
             );

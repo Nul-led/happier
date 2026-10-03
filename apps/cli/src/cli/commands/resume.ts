@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { hostname } from 'node:os';
-import { errorFrame } from '@happier-dev/cli-common/output';
+import { errorFrame, fail, neutral, warn } from '@happier-dev/cli-common/output';
 
 import { readSettings, readStoredCredentials, type StoredCredentials } from '@/persistence';
 import { createSessionAttachFile } from '@/daemon/sessionAttachFile';
@@ -174,7 +174,7 @@ export async function handleResumeCommand(
   const promptConfirmYesNoFn = deps?.promptConfirmYesNoFn ?? promptConfirmYesNo;
   const credentials = await readCredentialsFn();
   if (!credentials) {
-    console.error(chalk.yellow('⚠️  Not authenticated with Happier'));
+    console.error(warn('Not authenticated with Happier'));
     console.error(chalk.gray('  Please run "happier auth login" first'));
     process.exit(1);
   }
@@ -219,7 +219,7 @@ export async function handleResumeCommand(
   }
 
   if (!sessionIdOrPrefix) {
-    console.error(chalk.red('Error:'), 'Missing session ID.');
+    console.error(fail('Missing session ID.'));
     console.log('');
     console.log('Usage: happier resume <sessionId>');
     process.exit(1);
@@ -435,9 +435,9 @@ export async function handleResumeCliCommand(
     });
   } catch (error) {
     if (error instanceof PersistedProviderResumeBindingError) {
-      console.error(errorFrame('Error:', presentProviderCliRefusal(error.providerError)));
+      console.error(errorFrame("Couldn't resume the session", presentProviderCliRefusal(error.providerError)));
     } else {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+      console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     }
     if (process.env.DEBUG) {
       console.error(error);

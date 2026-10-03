@@ -12,6 +12,7 @@ import {
   normalizeActionExecuteResult,
   unwrapCliActionSuccessPayload,
 } from '@/cli/commands/session/shared/normalizeActionExecuteResult';
+import { cmd, fail } from '@happier-dev/cli-common/output';
 
 export async function cmdSessionRunAction(
   argv: string[],
@@ -75,7 +76,7 @@ export async function cmdSessionRunAction(
       await printJsonEnvelope({ ok: false, kind: 'session_run_action', error: { code: 'not_authenticated' } });
       return;
     }
-    console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+    console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
     process.exit(1);
   }
 

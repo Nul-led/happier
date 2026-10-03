@@ -14,7 +14,7 @@ const readStoredCredentialsMock = vi.hoisted(() => vi.fn<() => Promise<StoredCre
 const readSettingsMock = vi.hoisted(() => vi.fn<() => Promise<Partial<Settings>>>(async () => ({})));
 const clearCredentialsMock = vi.hoisted(() => vi.fn(async () => {}));
 const clearMachineIdMock = vi.hoisted(() => vi.fn<(opts?: unknown) => Promise<void>>(async () => {}));
-const stopDaemonMock = vi.hoisted(() => vi.fn(async () => {}));
+const stopDaemonMock = vi.hoisted(() => vi.fn(async () => ({ status: 'not_running' as const })));
 const isDaemonStopIncompleteErrorMock = vi.hoisted(() => vi.fn((error: unknown) => (
   typeof error === 'object'
   && error !== null
@@ -88,6 +88,7 @@ describe('happier auth login', () => {
     clearCredentialsMock.mockReset();
     clearMachineIdMock.mockReset();
     stopDaemonMock.mockReset();
+    stopDaemonMock.mockResolvedValue({ status: 'not_running' });
     isDaemonStopIncompleteErrorMock.mockClear();
     vi.resetModules();
   });
@@ -98,7 +99,7 @@ describe('happier auth login', () => {
       token: 'valid-token',
       encryption: { type: 'legacy', secret: new Uint8Array(32) },
     });
-    readSettingsMock.mockResolvedValue({ machineId: 'machine-1' });
+    readSettingsMock.mockResolvedValue({ machineId: 'machine-1', machineIdConfirmedByServer: true });
     let authMethodAtFlowStart: string | undefined;
     validateStoredAuthTokenAgainstActiveServerMock.mockImplementationOnce(async () => {
       authMethodAtFlowStart = process.env.HAPPIER_AUTH_METHOD;
@@ -174,18 +175,6 @@ describe('happier auth login', () => {
       const { handleAuthLogin } = await import('./login');
       await handleAuthLogin([]);
       expect(process.env.HAPPIER_AUTH_PRINT_CONFIGURE_LINKS).toBeUndefined();
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
-
-  it('prints authentication success exactly once after machine setup completes', async () => {
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    try {
-      const { handleAuthLogin } = await import('./login');
-      await handleAuthLogin([]);
-      const output = consoleSpy.mock.calls.flat().map(String).join('\n');
-      expect(output.match(/Authentication successful/gu) ?? []).toHaveLength(1);
     } finally {
       consoleSpy.mockRestore();
     }

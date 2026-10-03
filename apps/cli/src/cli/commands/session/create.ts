@@ -19,6 +19,7 @@ import {
 } from './shared/sessionWaitAction';
 import { resolveConnectedServicesLaunchAuthWithInventory } from '@/cli/connectedServicesLaunchAuth';
 import { resolveCatalogAgentConnectedAccountServiceIds } from '@/agent/catalog/registry';
+import { cmd, fail } from '@happier-dev/cli-common/output';
 
 const SESSION_CREATE_USAGE = `Usage: ${SESSION_HELP_LINES.create}`;
 
@@ -92,7 +93,7 @@ export async function cmdSessionCreate(
       await printJsonEnvelope({ ok: false, kind: 'session_create', error: { code: 'not_authenticated' } });
       return;
     }
-    console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+    console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
     process.exit(1);
   }
 

@@ -1,12 +1,14 @@
 import chalk from 'chalk';
 
 import type { AgentCliRuntimeDescriptor } from '@happier-dev/cli-common/agents';
+import { createStepPrinter, fail } from '@happier-dev/cli-common/output';
 
 import type { CommandContext } from '@/cli/commandRegistry';
 import { hasFlag } from '@/cli/commands/shared/argvFlags';
 import { resolvePluginStorePaths } from '@/plugins/store/paths';
 import { resolveMergedContributionRegistry } from '@/plugins/projection/registry/createResolvedContributionRegistry';
 import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
+import { describeAgentCliInstallMode, runAgentCliInstallStep } from '@/packagedRuntime/managedTools/agentCliInstallStep';
 import type {
   invokeAgentCliInstall as invokeProviderCliInstallDefault,
 } from '@/packagedRuntime/managedTools/invokeAgentCliInstall';
@@ -92,26 +94,6 @@ function readInstallableProviderRows(registry: Pick<ResolvedContributionRegistry
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function printProviderInstallResult(
-  result: Awaited<ReturnType<typeof invokeProviderCliInstallDefault>>,
-  log: InstallCliDeps['log'],
-): void {
-  if (!result.ok) return;
-  const title = result.plan.title;
-  if (result.alreadyInstalled) {
-    log(`${title} is already installed.`);
-  } else if (result.plan.installMode === 'vendor_recipe') {
-    log(`Installed ${title}.`);
-  } else if (result.plan.installMode === 'github_release_binary') {
-    log(`Installed ${title} via managed release binary.`);
-  } else if (result.plan.installMode === 'managed_package') {
-    log(`Installed ${title} via managed package runtime.`);
-  }
-  if (result.logPath) {
-    log(`Install log: ${result.logPath}`);
-  }
-}
-
 export async function runInstallCliCommand(
   context: CommandContext,
   deps: InstallCliDeps = {
@@ -151,7 +133,7 @@ export async function runInstallCliCommand(
     if (subcommand === 'provider') {
       const agentIdRaw = context.args[2]?.trim() ?? '';
       if (!agentIdRaw) {
-        deps.error(chalk.red('Error:'), 'Missing provider id.');
+        deps.error(fail('Missing provider id.'));
         deps.log(usage(installableProviderRows));
         deps.exit(1);
         return;
@@ -162,22 +144,24 @@ export async function runInstallCliCommand(
       }
       const providerRow = installableProviderRows.find((row) => row.id === agentIdRaw);
       if (!providerRow) {
-        deps.error(chalk.red('Error:'), `Unknown provider id: ${agentIdRaw}`);
+        deps.error(fail(`Unknown provider id: ${agentIdRaw}`));
         deps.log(usage(installableProviderRows));
         deps.exit(1);
         return;
       }
 
       const flags = parseProviderInstallFlags(context.args.slice(3));
-      const result = await deps.invokeAgentCliInstall({
+      // A dry run installs nothing, so it prints its plan instead of an install step.
+      const steps = createStepPrinter({ enabled: !flags.dryRun });
+      const result = await runAgentCliInstallStep(steps, providerRow.title, () => deps.invokeAgentCliInstall({
         agentId: agentIdRaw,
         runtimeSpec: providerRow.runtimeSpec,
         params: flags,
         env: process.env,
         nodePlatform: process.platform,
-      });
+      }));
       if (!result.ok) {
-        deps.error(chalk.red('Error:'), result.errorMessage);
+        deps.error(fail(result.errorMessage));
         if (result.logPath) {
           deps.log(`Install log: ${result.logPath}`);
         }
@@ -185,24 +169,26 @@ export async function runInstallCliCommand(
         return;
       }
       if (flags.dryRun) {
-        deps.log(`Dry run: would install ${result.plan.title} via ${result.plan.installMode}.`);
+        deps.log(`Dry run: would install ${result.plan.title} via ${describeAgentCliInstallMode(result.plan.installMode)}.`);
         if (result.logPath) {
           deps.log(`Install log: ${result.logPath}`);
         }
         return;
       }
-      printProviderInstallResult(result, deps.log);
+      if (result.logPath) {
+        deps.log(`Install log: ${result.logPath}`);
+      }
       return;
     }
     if (subcommand === 'help' || subcommand === '--help' || subcommand === '-h') {
       deps.log(usage(installableProviderRows));
       return;
     }
-    deps.error(chalk.red('Error:'), `Unknown install subcommand: ${subcommand}`);
+    deps.error(fail(`Unknown install subcommand: ${subcommand}`));
     deps.log(usage(installableProviderRows));
     deps.exit(1);
   } catch (error) {
-    deps.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    deps.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       deps.error(error);
     }

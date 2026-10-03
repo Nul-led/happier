@@ -18,7 +18,7 @@ function readWaitTimeoutSecondsFlag(args: readonly string[]): number | null {
   const raw = String(args[index + 1] ?? '').trim();
   const seconds = Number.parseInt(raw, 10);
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    console.error(errorFrame('Error:', ['--wait-timeout needs a positive number of seconds, for example `--wait-timeout 300`.']));
+    console.error(errorFrame('Invalid --wait-timeout', ['It needs a positive number of seconds, for example --wait-timeout 300.']));
     process.exit(1);
   }
   return seconds;
@@ -43,7 +43,7 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
   try {
     method = resolveAuthMethodFlag(args);
   } catch (error) {
-    console.error(errorFrame('Error:', [error instanceof Error ? error.message : 'Invalid --method flag']));
+    console.error(errorFrame('Invalid --method', [error instanceof Error ? error.message : 'Invalid --method flag']));
     process.exit(1);
   }
   if (method) process.env.HAPPIER_AUTH_METHOD = method;
@@ -78,8 +78,8 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
 
     try {
       logger.debug('Stopping daemon for force auth...');
-      await stopDaemon();
-      console.log(ok('Stopped daemon'));
+      const stopped = await stopDaemon();
+      console.log(ok(stopped.status === 'stopped' ? 'Stopped daemon' : 'No daemon was running'));
     } catch (error) {
       if (isDaemonStopIncompleteError(error)) throw error;
       logger.debug('Daemon was not running or failed to stop:', error);
@@ -108,8 +108,8 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
 
         try {
           logger.debug('Stopping daemon before auth repair...');
-          await stopDaemon();
-          console.log(ok('Stopped daemon'));
+          const stopped = await stopDaemon();
+          console.log(ok(stopped.status === 'stopped' ? 'Stopped daemon' : 'No daemon was running'));
         } catch (error) {
           if (isDaemonStopIncompleteError(error)) throw error;
           logger.debug('Daemon was not running or failed to stop during auth repair:', error);
@@ -155,13 +155,13 @@ export async function handleAuthLogin(args: string[], signal?: AbortSignal): Pro
     });
     const out = createOutputBuilder();
     out.blank();
-    out.line(ok('Authentication successful'));
+    out.line(ok('Signed in'));
     out.definitionList([
       { label: 'Machine ID', value: result.machineId },
     ], { indent: '  ' });
     console.log(out.render());
   } catch (error) {
-    console.error(errorFrame('Authentication failed:', [error instanceof Error ? error.message : 'Unknown error']));
+    console.error(errorFrame('Sign-in failed', [error instanceof Error ? error.message : 'Unknown error']));
     process.exit(1);
   }
 }

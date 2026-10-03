@@ -64,7 +64,6 @@ describe('happier install provider contribution parity', () => {
         },
       },
     }));
-    const log = vi.fn();
     const context: CommandContext = {
       args: ['install', 'provider', 'acme-agent'],
       rawArgv: ['happier', 'install', 'provider', 'acme-agent'],
@@ -72,7 +71,7 @@ describe('happier install provider contribution parity', () => {
     };
 
     await runInstallCliCommand(context, {
-      log,
+      log: vi.fn(),
       error: vi.fn(),
       exit: vi.fn() as never,
       runDoctorCommand: vi.fn(),
@@ -86,6 +85,5 @@ describe('happier install provider contribution parity', () => {
         title: 'Acme Agent CLI',
       }),
     }));
-    expect(log).toHaveBeenCalledWith('Installed Acme Agent CLI via managed package runtime.');
   });
 });

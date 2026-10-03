@@ -56,8 +56,12 @@ function buildJwtWithSub(sub: string): string {
   return `${header}.${payload}.x`;
 }
 
+const { spawnDetachedDaemonStartSyncMock } = vi.hoisted(() => ({
+  spawnDetachedDaemonStartSyncMock: vi.fn(async (): Promise<{ pid?: number; unref: () => void }> => ({ unref: () => {} })),
+}));
+
 vi.mock('@/daemon/runtime/spawnDetachedDaemonStartSync', () => ({
-  spawnDetachedDaemonStartSync: async () => ({ unref: () => {} }),
+  spawnDetachedDaemonStartSync: () => spawnDetachedDaemonStartSyncMock(),
 }));
 
 vi.mock('@/daemon/controlClient', async (importOriginal) => {
@@ -146,7 +150,8 @@ describe('happier daemon start output', () => {
 
       const stdout = await runDaemonStartAndCapture(0);
 
-      expect(stdout).toContain('Daemon started successfully');
+      expect(stdout).toContain('- [..] Starting daemon');
+      expect(stdout).toContain('- [✓] Started daemon');
       expect(stdout).toContain('Relay: http://localhost:4321');
       expect(stdout).toContain('Relay ID: env_test');
       expect(stdout).toContain('Account: account-123');
@@ -223,6 +228,21 @@ describe('happier daemon start output', () => {
     } finally {
       envScope.restore();
       await removeTempDir(tmp);
+    }
+  }, 60_000);
+
+  it('marks the start step failed when the daemon cannot be spawned', async () => {
+    vi.useRealTimers();
+    spawnDetachedDaemonStartSyncMock.mockRejectedValueOnce(new Error('spawn EACCES'));
+    vi.resetModules();
+    const output = captureConsoleText();
+    try {
+      const { handleDaemonCliCommand } = await import('./daemon');
+      await expect(handleDaemonCliCommand({ args: ['daemon', 'start'], rawArgv: [], terminalRuntime: null }))
+        .rejects.toThrow('spawn EACCES');
+      expect(output.text()).toContain('- [x] Starting daemon');
+    } finally {
+      output.restore();
     }
   }, 60_000);
 

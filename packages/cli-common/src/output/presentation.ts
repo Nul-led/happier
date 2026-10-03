@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { PLANET_ACCENT_HEX } from '@happier-dev/brand/planet';
 
 type ChalkLike = typeof chalk;
 
@@ -17,9 +18,10 @@ export type TerminalStyles = Readonly<{
 
 export type BannerOptions = Readonly<{
   subtitle?: string;
-  prefix?: string;
-  suffix?: string;
 }>;
+
+/** The brand accent: the step printer's spinner, the setup prompt, and titles. */
+export const ACCENT_HEX = PLANET_ACCENT_HEX;
 
 export type DefinitionListRow = Readonly<{
   label: string;
@@ -73,10 +75,6 @@ function createStyles(chalkLike: ChalkLike): TerminalStyles {
   };
 }
 
-function iconFor(chalkLike: ChalkLike, symbol: string): string {
-  return hasColor(chalkLike) ? normalizeText(symbol) : '';
-}
-
 function normalizeRows(rows: readonly Readonly<{ label: string; value: string }>[]): DefinitionListRow[] {
   return rows
     .map((row) => ({
@@ -117,7 +115,7 @@ function statusSymbolFor(chalkLike: ChalkLike, tone: 'success' | 'warning' | 'er
   if (tone === 'success') return chalkLike.green(symbol);
   if (tone === 'warning') return chalkLike.yellow(symbol);
   if (tone === 'error') return chalkLike.red(symbol);
-  if (tone === 'info') return chalkLike.cyan(symbol);
+  if (tone === 'info') return chalkLike.hex(ACCENT_HEX)(symbol);
   return chalkLike.gray(symbol);
 }
 
@@ -131,12 +129,9 @@ function statusLineImpl(
   return text ? `${symbol} ${text}` : symbol;
 }
 
+// Matches the step printer's linear mode (`- [..]`, `- [✓]`): an unfinished step stays unstyled.
 function checklistSymbolFor(chalkLike: ChalkLike, state: ChecklistState): string {
-  if (state === 'pending' || state === 'running') {
-    const symbol = '..';
-    if (!hasColor(chalkLike)) return symbol;
-    return chalkLike.cyan(symbol);
-  }
+  if (state === 'pending' || state === 'running') return '..';
   return statusSymbolFor(chalkLike, state);
 }
 
@@ -194,10 +189,7 @@ function createPresentation(chalkLike: ChalkLike) {
   const sectionTitle = (title: string): string => chalkLike.bold(normalizeText(title));
   const emphasis = (value: string): string => chalkLike.bold(normalizeText(value));
   const banner = (title: string, options: BannerOptions = {}): string => {
-    const prefix = iconFor(chalkLike, options.prefix ?? '✨');
-    const suffix = iconFor(chalkLike, options.suffix ?? '✨');
-    const titleLine = `${prefix ? `${prefix} ` : ''}${chalkLike.cyan(normalizeText(title))}${suffix ? ` ${suffix}` : ''}`;
-    const lines = [chalkLike.bold(titleLine)];
+    const lines = [chalkLike.bold(chalkLike.hex(ACCENT_HEX)(normalizeText(title)))];
     const subtitle = normalizeText(options.subtitle ?? '');
     if (subtitle) lines.push(chalkLike.dim(subtitle));
     return lines.join('\n');
@@ -213,15 +205,9 @@ function createPresentation(chalkLike: ChalkLike) {
     options: DefinitionListOptions = {},
   ): string => definitionListImpl(chalkLike, rows, options);
   const table = definitionList;
-  const errorFrame = (title: string, details: readonly string[] = []): string => {
-    const lines = [chalkLike.red(normalizeText(title))];
-    for (const detail of details) {
-      const normalized = normalizeText(detail);
-      if (!normalized) continue;
-      lines.push(chalkLike.gray(`  ${normalized}`));
-    }
-    return lines.join('\n');
-  };
+  // A failed status line (red x, like fail()) with gray details; a trailing colon on the title is dropped.
+  const errorFrame = (title: string, details: readonly string[] = []): string =>
+    frameImpl(chalkLike, 'error', normalizeText(title).replace(/:\s*$/u, ''), details);
   const frame = (tone: FrameTone, title: string, details: readonly string[] = [], options: FrameOptions = {}): string =>
     frameImpl(chalkLike, tone, title, details, options);
   const checklist = (items: readonly ChecklistItem[], options: ChecklistOptions = {}): string =>

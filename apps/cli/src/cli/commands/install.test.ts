@@ -9,6 +9,7 @@ import { createPluginStateStore } from '@/plugins/store/state.testkit';
 import { inspectPluginSource } from '@/plugins/store/install/source';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
+import { captureStdout } from '@/testkit/logger/captureOutput';
 
 import { runInstallCliCommand } from './install';
 
@@ -252,13 +253,18 @@ describe('runInstallCliCommand', () => {
       },
     });
 
-    await runInstallCliCommand(makeContext(['install', 'provider', 'codex', '--dry-run']), {
-      log,
-      error: vi.fn(),
-      exit: vi.fn() as never,
-      runDoctorCommand: vi.fn(),
-      invokeAgentCliInstall,
-    });
+    const stdout = captureStdout();
+    try {
+      await runInstallCliCommand(makeContext(['install', 'provider', 'codex', '--dry-run']), {
+        log,
+        error: vi.fn(),
+        exit: vi.fn() as never,
+        runDoctorCommand: vi.fn(),
+        invokeAgentCliInstall,
+      });
+    } finally {
+      stdout.restore();
+    }
 
     expect(invokeAgentCliInstall).toHaveBeenCalledWith({
       agentId: 'codex',
@@ -269,6 +275,8 @@ describe('runInstallCliCommand', () => {
     });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('Dry run: would install OpenAI Codex CLI'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('/tmp/codex-install.log'));
+    // A dry run installs nothing, so it shows no install step.
+    expect(stdout.text()).not.toContain('Installing');
   });
 
   it('passes force installs through as skipIfInstalled false', async () => {
@@ -330,15 +338,18 @@ describe('runInstallCliCommand', () => {
         },
       },
     });
-    const log = vi.fn();
-
-    await runInstallCliCommand(makeContext(['install', 'provider', 'acme-agent']), {
-      log,
-      error: vi.fn(),
-      exit: vi.fn() as never,
-      runDoctorCommand: vi.fn(),
-      invokeAgentCliInstall,
-    });
+    const stdout = captureStdout();
+    try {
+      await runInstallCliCommand(makeContext(['install', 'provider', 'acme-agent']), {
+        log: vi.fn(),
+        error: vi.fn(),
+        exit: vi.fn() as never,
+        runDoctorCommand: vi.fn(),
+        invokeAgentCliInstall,
+      });
+    } finally {
+      stdout.restore();
+    }
 
     expect(invokeAgentCliInstall).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'acme-agent',
@@ -348,7 +359,8 @@ describe('runInstallCliCommand', () => {
         binaryName: 'acme-agent',
       }),
     }));
-    expect(log).toHaveBeenCalledWith('Installed Acme Agent CLI via managed package runtime.');
+    // Non-TTY output: the install is a visible step that completes with its outcome.
+    expect(stdout.text()).toContain('- [..] Installing Acme Agent CLI\n- [✓] Installed Acme Agent CLI via a managed package\n');
   });
 
   it('defaults vendor recipe execution for explicit provider installs', async () => {
@@ -397,10 +409,7 @@ describe('runInstallCliCommand', () => {
       invokeAgentCliInstall: vi.fn(),
     });
 
-    expect(error).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.stringContaining('Unknown provider id: not-a-provider'),
-    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Unknown provider id: not-a-provider'));
     expect(exit).toHaveBeenCalledWith(1);
   });
 
@@ -408,15 +417,21 @@ describe('runInstallCliCommand', () => {
     const error = vi.fn();
     const exit = vi.fn();
 
-    await runInstallCliCommand(makeContext(['install', 'provider', 'codex']), {
-      log: vi.fn(),
-      error,
-      exit,
-      runDoctorCommand: vi.fn(),
-      invokeAgentCliInstall: vi.fn().mockRejectedValue(new Error('network stalled')),
-    });
+    const stdout = captureStdout();
+    try {
+      await runInstallCliCommand(makeContext(['install', 'provider', 'codex']), {
+        log: vi.fn(),
+        error,
+        exit,
+        runDoctorCommand: vi.fn(),
+        invokeAgentCliInstall: vi.fn().mockRejectedValue(new Error('network stalled')),
+      });
+    } finally {
+      stdout.restore();
+    }
 
-    expect(error).toHaveBeenCalledWith(expect.any(String), 'network stalled');
+    expect(stdout.text()).toMatch(/^- \[x\] Installing .+$/m);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('network stalled'));
     expect(exit).toHaveBeenCalledWith(1);
   });
 

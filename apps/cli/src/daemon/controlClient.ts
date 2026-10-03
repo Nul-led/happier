@@ -16,6 +16,7 @@ import {
   inspectDaemonLockOwner,
   readDaemonLockOwnerIdentity,
   readDaemonLockPid,
+  readDaemonLockSnapshot,
   readDaemonState,
 } from '@/persistence';
 import {
@@ -110,6 +111,7 @@ import type {
 import { daemonPost, type DaemonControlRequestOptions } from './controlHttp';
 export type { DaemonControlRequestOptions } from './controlHttp';
 export { startDaemonAgentInstallJob, readDaemonAgentInstallJob, cancelDaemonAgentInstallJob, listDaemonAgentInstallJobs } from './agentInstallJobClient';
+import { inspectDaemonPublicationPresence, type DaemonPublicationPresenceInspection } from './controlLiveness';
 import {
   type PluginChangeDecision,
   type PluginChangeDecisionResult,
@@ -295,6 +297,11 @@ export async function inspectDaemonRunningStateAndCleanupStaleState(): Promise<D
     process.kill(state.pid, 0);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'ESRCH') {
+      if (state.controlToken) {
+        const presence = await inspectPublishedDaemonPresence(state);
+        if (presence.status === 'running') return { status: 'running', state };
+        if (presence.status === 'unverified') return { status: 'starting', state };
+      }
       // State can still name a departed predecessor while its successor owns the
       // lifecycle lock and has not published its own state yet.
       const lockStartup = await inspectDaemonLockStartupProgress();
@@ -1403,7 +1410,12 @@ async function assertForceStopIdentity(
 async function forceKillKnownDaemonPid(
   pid: number,
   expectedState?: Awaited<ReturnType<typeof readDaemonState>>,
+  observation?: PublishedDaemonOwnerObservation,
 ): Promise<DaemonStopResult> {
+  if (observation && !isPidPresent(pid)) {
+    if (await observation.isPresent()) throw new DaemonStopIncompleteError({ reason: 'process_identity_unverified', pid });
+    return { status: 'stopped', method: 'graceful' };
+  }
   // A recorded lifecycle owner that is PROVABLY gone is a completed stop, not an identity
   // mismatch: there is no process left to signal and nothing left to protect. The identity gate
   // below reads a process inventory, and an inventory that finds nothing cannot tell "the pid
@@ -1492,6 +1504,8 @@ export async function stopDaemon(params: {
       return await forceKillKnownDaemonPid(lockPid);
     }
 
+    const observation = observePublishedDaemonOwner(state);
+    if (!await observation.isPresent()) return { status: 'not_running' };
     logger.debug(`Stopping daemon with PID ${state.pid}`);
 
     // Try HTTP graceful stop
@@ -1500,16 +1514,17 @@ export async function stopDaemon(params: {
         stopSessions: params.stopSessions === true,
       });
 
+      observation.acknowledgeStop();
       // Wait for daemon to die
-      await waitForProcessDeath(state.pid, resolveDaemonStopWaitForDeathTimeoutMs());
-      await cleanupDaemonState();
+      await waitForProcessDeath(state.pid, resolveDaemonStopWaitForDeathTimeoutMs(), observation);
+      if (!observation.hasHiddenPid()) await cleanupDaemonState();
       logger.debug('Daemon stopped gracefully via HTTP');
       return { status: 'stopped', method: 'graceful' };
     } catch (error) {
       logger.debug('HTTP stop failed, will force kill', error);
     }
 
-    return await forceKillKnownDaemonPid(state.pid, state);
+    return await forceKillKnownDaemonPid(state.pid, state, observation);
   } catch (error) {
     if (isDaemonStopIncompleteError(error)) throw error;
     logger.debug('Error stopping daemon', error);
@@ -1517,7 +1532,72 @@ export async function stopDaemon(params: {
   }
 }
 
-async function waitForProcessDeath(pid: number, timeout: number): Promise<void> {
+export async function inspectPublishedDaemonPresence(
+  state: Readonly<{ pid: number; httpPort: number; controlToken?: string }>,
+): Promise<DaemonPublicationPresenceInspection> {
+  return await inspectDaemonPublicationPresence({ ...state, timeoutMs: resolveDaemonPingTimeoutMs() });
+}
+
+export type PublishedDaemonOwnerObservation = Readonly<{
+  isPresent: () => Promise<boolean>;
+  hasHiddenPid: () => boolean;
+  acknowledgeStop: () => void;
+}>;
+
+/** Stop observes the existing lock before requesting shutdown; it never owns cleanup. */
+export function observePublishedDaemonOwner(
+  state: Readonly<{ pid: number; httpPort: number; controlToken?: string }>,
+  lockFile = configuration.daemonLockFile,
+  options: Readonly<{ unobservablePidIsUnverified?: boolean }> = {},
+): PublishedDaemonOwnerObservation {
+  let observedLock: ReturnType<typeof readDaemonLockSnapshot> = null;
+  let hiddenPid = false;
+  let unobservablePid = false;
+  try {
+    const snapshot = readDaemonLockSnapshot(lockFile, true);
+    if (snapshot?.pid === state.pid) observedLock = snapshot;
+  } catch {
+    // No readable matching lifecycle lock means hidden-process exit cannot be confirmed.
+  }
+  return {
+    hasHiddenPid: () => hiddenPid,
+    acknowledgeStop: () => { if (unobservablePid) hiddenPid = true; },
+    async isPresent() {
+      const inspection = await inspectPublishedDaemonPresence(state);
+      if (inspection.status === 'running') {
+        if (inspection.hiddenPid) hiddenPid = true;
+        return true;
+      }
+      if (inspection.status === 'unverified') {
+        unobservablePid = true;
+        return true;
+      }
+      // Ordinary dead publications remain absent. Stricter cleanup proof applies
+      // only after authenticated control established the hidden owner in this operation.
+      if (!hiddenPid) return options.unobservablePidIsUnverified === true;
+      if (!observedLock) return true;
+      // Control closes before final cleanup. Only release of the observed owner lock
+      // proves that the existing shutdown sequence reached its final exit phase.
+      try {
+        const snapshot = readDaemonLockSnapshot(lockFile, true);
+        return snapshot !== null && (snapshot.pid === null || snapshot.raw === observedLock.raw);
+      } catch {
+        return true;
+      }
+    },
+  };
+}
+
+async function waitForProcessDeath(pid: number, timeout: number, observation?: PublishedDaemonOwnerObservation): Promise<void> {
+  if (observation) {
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+      if (!await observation.isPresent()) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (!await observation.isPresent()) return;
+    throw new Error('Daemon lifecycle did not finish within timeout');
+  }
   const start = Date.now();
   while (Date.now() - start < timeout) {
     try {

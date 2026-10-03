@@ -161,6 +161,9 @@ describe('happier relay host install reachable relay URL selection', () => {
         expect(active.localServerUrl).toBe('http://127.0.0.1:3005');
         expect(logs.join('\n')).toContain('http://192.168.1.20:3005');
         expect(promptedQuestions).toEqual([]);
+        // The download and install are steps, so a long install never looks like a hang.
+        expect(logs.join('\n')).toContain('- [✓] Downloading relay');
+        expect(logs.join('\n')).toContain('- [✓] Relay host installed');
     });
 
     it('says the relay is this-computer-only when nothing else can reach it', { timeout: 120_000 }, async () => {

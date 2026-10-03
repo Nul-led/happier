@@ -301,6 +301,79 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
     }
   });
 
+  // The CLI shows a live step around the install, and the daemon serves other requests meanwhile:
+  // the migration must not block the event loop or write over the caller's terminal.
+  it('runs the database migration without blocking', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(join(payloadRoot, 'prisma', 'sqlite', 'migrations'), { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(
+        serverBinaryPath,
+        '#!/bin/sh\nif [ "$1" = "--migrate-only" ]; then echo "applied 20200101000000_init"; echo "migration note" >&2; sleep 1; fi\n',
+        'utf8',
+      );
+      await chmod(serverBinaryPath, 0o755);
+
+      let longestStall = 0;
+      let lastTick = Date.now();
+      const ticker = setInterval(() => {
+        const now = Date.now();
+        longestStall = Math.max(longestStall, now - lastTick);
+        lastTick = now;
+      }, 20);
+      try {
+        await installOrUpdateRelayRuntimeLocal({
+          serverBinaryPath,
+          channel: 'preview',
+          mode: 'user',
+          platform: 'linux',
+          arch: 'arm64',
+          homeDir,
+          env: { HAPPIER_SQLITE_AUTO_MIGRATE: '0' },
+          runServiceCommands: false,
+          skipHealthCheck: true,
+        });
+      } finally {
+        clearInterval(ticker);
+      }
+
+      expect(longestStall).toBeLessThan(500);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports what the database migration printed when it fails', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(join(payloadRoot, 'prisma', 'sqlite', 'migrations'), { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(
+        serverBinaryPath,
+        '#!/bin/sh\nif [ "$1" = "--migrate-only" ]; then echo "database is locked" >&2; exit 3; fi\n',
+        'utf8',
+      );
+      await chmod(serverBinaryPath, 0o755);
+
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        env: { HAPPIER_SQLITE_AUTO_MIGRATE: '0' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      })).rejects.toThrow(/database migration[\s\S]*exited with status 3[\s\S]*database is locked/);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('creates and populates the sqlite migrations directory from the server payload', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-'));
     try {

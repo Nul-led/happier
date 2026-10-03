@@ -40,6 +40,7 @@ import type { createCliActionExecutorFromCredentials } from '@/session/actions/c
 
 type Executor = Pick<ReturnType<typeof createCliActionExecutorFromCredentials>, 'execute'>;
 type ExecutorParams = Parameters<typeof createCliActionExecutorFromCredentials>[0];
+import { errorFrame } from '@happier-dev/cli-common/output';
 
 export type PluginsSettingsCommandDeps = Readonly<{
   readCredentialsFn?: () => Promise<StoredCredentials | null>;
@@ -339,7 +340,7 @@ async function printOutcome(args: readonly string[], outcome: PluginSettingsAdmi
     return;
   }
   if (!outcome.ok) {
-    console.error(`Error: ${outcome.error ?? 'Plugin Settings administration is unavailable.'}`);
+    console.error(errorFrame(outcome.error ?? 'Plugin Settings administration is unavailable.'));
     process.exitCode = 1;
     return;
   }

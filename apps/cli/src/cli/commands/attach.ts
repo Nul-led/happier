@@ -42,6 +42,7 @@ import { buildAttachSelectionModel, formatAttachIneligibilityFooter } from './at
 import { explainAttachIneligibility, type AgentAttachStrategyForExplainer } from '@/session/attach/explainAttachIneligibility';
 
 import type { CommandContext } from '@/cli/commandRegistry';
+import { cmd, fail, neutral } from '@happier-dev/cli-common/output';
 
 function spawnTmux(params: {
   args: string[];
@@ -137,7 +138,7 @@ export async function runTmuxAttach(params: {
 }>): Promise<number> {
   const isTmuxAvailableFn = deps?.isTmuxAvailableFn ?? isTmuxAvailable;
   if (!(await isTmuxAvailableFn())) {
-    console.error(chalk.red('Error:'), 'tmux is not available on this machine.');
+    console.error(fail('tmux is not available on this machine.'));
     return 1;
   }
 
@@ -154,11 +155,11 @@ export async function runTmuxAttach(params: {
   });
 
   if (plan.type === 'not-attachable') {
-    console.error(chalk.red('Error:'), plan.reason);
+    console.error(fail(plan.reason));
     return 1;
   }
   if (plan.type !== 'tmux') {
-    console.error(chalk.red('Error:'), 'Session does not use tmux attach.');
+    console.error(fail('Session does not use tmux attach.'));
     return 1;
   }
 
@@ -176,7 +177,7 @@ export async function runTmuxAttach(params: {
   });
 
   if (selectExit !== 0) {
-    console.error(chalk.red('Error:'), `Failed to select tmux window (${plan.target}).`);
+    console.error(fail(`Failed to select tmux window (${plan.target}).`));
     return selectExit;
   }
 
@@ -221,12 +222,12 @@ async function defaultRunWindowsTerminalAttach(params: {
   terminal: NonNullable<TerminalAttachmentInfo['terminal']>;
 }): Promise<number> {
   if (process.platform !== 'win32') {
-    console.error(chalk.red('Error:'), 'Windows Terminal attach is only available on Windows.');
+    console.error(fail('Windows Terminal attach is only available on Windows.'));
     return 1;
   }
   const windowId = params.terminal.windows?.windowId;
   if (typeof windowId !== 'string' || windowId.trim().length === 0) {
-    console.error(chalk.red('Error:'), 'Session does not include a Windows Terminal window id.');
+    console.error(fail('Session does not include a Windows Terminal window id.'));
     return 1;
   }
   return await focusWindowsTerminalWindow({ windowId });
@@ -236,19 +237,19 @@ async function defaultRunWindowsConsoleAttach(params: {
   terminal: NonNullable<TerminalAttachmentInfo['terminal']>;
 }): Promise<number> {
   if (process.platform !== 'win32') {
-    console.error(chalk.red('Error:'), 'Windows console attach is only available on Windows.');
+    console.error(fail('Windows console attach is only available on Windows.'));
     return 1;
   }
   const pid = params.terminal.windows?.pid;
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
-    console.error(chalk.red('Error:'), 'Session does not include a Windows console process id.');
+    console.error(fail('Session does not include a Windows console process id.'));
     return 1;
   }
   return await focusWindowsConsoleWindow({ pid });
 }
 
 function printMissingAttachInfo(sessionId: string): void {
-  console.error(chalk.red('Error:'), `No local attachment info found for session ${sessionId}.`);
+  console.error(fail(`No local attachment info found for session ${sessionId}.`));
   console.error(chalk.gray('This usually means the session was not started with an attachable terminal host, or it was started on another machine.'));
 }
 
@@ -389,7 +390,7 @@ export async function handleAttachCommand(
 
   if (isInteractive) {
     if (!canUseInkSelectorFn()) {
-      console.error(chalk.red('Error:'), 'Interactive attach is not available (raw TTY mode not supported).');
+      console.error(fail('Interactive attach is not available (raw TTY mode not supported).'));
       console.log('');
       console.log('Hint: run `happier session list --active` and then `happier attach <session-id>`.');
       process.exit(1);
@@ -397,7 +398,7 @@ export async function handleAttachCommand(
 
     credentialsForInteractive = await (deps.readCredentialsFn ?? readStoredCredentials)();
     if (!credentialsForInteractive) {
-      console.error(chalk.red('Error:'), 'Not authenticated. Run "happier auth login" first.');
+      console.error(fail(`Not signed in. Run ${cmd('happier auth login')} first.`));
       process.exit(1);
     }
 
@@ -432,7 +433,7 @@ export async function handleAttachCommand(
       probeSessionIdFn: selectionModel.probeSessionIdFn,
     });
     if (selected.type === 'cancelled') {
-      console.log(chalk.blue('Attach cancelled'));
+      console.log(neutral('Attach cancelled'));
       return;
     }
     if (selected.type === 'none') {
@@ -444,7 +445,7 @@ export async function handleAttachCommand(
   }
 
   if (!sessionIdOrPrefix) {
-    console.error(chalk.red('Error:'), 'Missing session ID.');
+    console.error(fail('Missing session ID.'));
     console.log('');
     console.log('Usage: happier attach <sessionId>');
     process.exit(1);
@@ -485,7 +486,7 @@ export async function handleAttachCommand(
         tmuxAvailable: await (deps.isTmuxAvailableFn ?? isTmuxAvailable)(),
         agentAttachStrategy: resolveAgentAttachStrategy(eligibility.agentId ?? context.agentId),
       });
-      console.error(chalk.red('Error:'), explanation.fullReason);
+      console.error(fail(explanation.fullReason));
       if (explanation.nextStepHint) console.error(chalk.gray(explanation.nextStepHint));
       process.exit(1);
     }
@@ -584,7 +585,7 @@ export async function handleAttachCliCommand(context: CommandContext): Promise<v
   try {
     await handleAttachCommand(context.args.slice(1));
   } catch (error) {
-    console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error');
+    console.error(fail(error instanceof Error ? error.message : 'Unknown error'));
     if (process.env.DEBUG) {
       console.error(error);
     }

@@ -433,7 +433,7 @@ export async function readSettings(): Promise<Settings> {
     // Warn if schema version is newer than supported
     if (schemaVersion > SUPPORTED_SCHEMA_VERSION) {
       logger.warn(
-        `⚠️ Settings schema v${schemaVersion} > supported v${SUPPORTED_SCHEMA_VERSION}. ` +
+        `Settings file uses schema v${schemaVersion}, newer than the supported v${SUPPORTED_SCHEMA_VERSION}. ` +
         'Update Happier CLI for full functionality.'
       );
     }
@@ -1182,7 +1182,7 @@ const DaemonLockRecordSchema = z.object({
   createdAtMs: z.number().int().nonnegative(),
 }).strict();
 type DaemonLockRecord = z.infer<typeof DaemonLockRecordSchema>;
-type DaemonLockSnapshot = Readonly<{
+export type DaemonLockSnapshot = Readonly<{
   raw: string;
   pid: number | null;
   record: DaemonLockRecord | null;
@@ -1281,12 +1281,13 @@ export type DaemonLockOwnerInspection =
   | Readonly<{ status: 'starting'; pid: number; evidence: 'classified' | 'live-unclassified' }>
   | Readonly<{ status: 'replaceable'; pid: number | null; reason: 'dead' | 'unrelated' | 'invalid' }>;
 
-function readDaemonLockSnapshot(): DaemonLockSnapshot | null {
+export function readDaemonLockSnapshot(lockPath = configuration.daemonLockFile, strictRead = false): DaemonLockSnapshot | null {
   let raw: string;
   try {
-    raw = readFileSync(configuration.daemonLockFile, 'utf8');
+    raw = readFileSync(lockPath, 'utf8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return null;
+    if (strictRead) throw error;
     return { raw: '', pid: null, record: null };
   }
   try {
@@ -1343,7 +1344,7 @@ export function readDaemonLockOwnerIdentity(): Readonly<{
     : null;
 }
 
-async function inspectDaemonLockSnapshotOwner(snapshot: DaemonLockSnapshot): Promise<DaemonLockOwnerInspection> {
+async function inspectDaemonLockSnapshotOwner(snapshot: DaemonLockSnapshot, options: Readonly<{ unobservablePidIsUnverified?: boolean }> = {}): Promise<DaemonLockOwnerInspection> {
   const pid = snapshot.pid;
   if (!pid) return { status: 'replaceable', pid: null, reason: 'invalid' };
 
@@ -1351,6 +1352,7 @@ async function inspectDaemonLockSnapshotOwner(snapshot: DaemonLockSnapshot): Pro
     process.kill(pid, 0);
   } catch (error) {
     if ((error as NodeJS.ErrnoException | null)?.code === 'ESRCH') {
+      if (options.unobservablePidIsUnverified) return { status: 'starting', pid, evidence: 'live-unclassified' };
       return { status: 'replaceable', pid, reason: 'dead' };
     }
     return { status: 'starting', pid, evidence: 'live-unclassified' };
@@ -1383,9 +1385,9 @@ async function inspectDaemonLockSnapshotOwner(snapshot: DaemonLockSnapshot): Pro
   return { status: 'starting', pid, evidence: 'live-unclassified' };
 }
 
-export async function inspectDaemonLockOwner(): Promise<DaemonLockOwnerInspection> {
-  const snapshot = readDaemonLockSnapshot();
-  return snapshot ? await inspectDaemonLockSnapshotOwner(snapshot) : { status: 'missing' };
+export async function inspectDaemonLockOwner(lockPath = configuration.daemonLockFile, options: Readonly<{ unobservablePidIsUnverified?: boolean }> = {}): Promise<DaemonLockOwnerInspection> {
+  const snapshot = readDaemonLockSnapshot(lockPath);
+  return snapshot ? await inspectDaemonLockSnapshotOwner(snapshot, options) : { status: 'missing' };
 }
 
 export async function clearReplaceableDaemonLock(): Promise<void> {

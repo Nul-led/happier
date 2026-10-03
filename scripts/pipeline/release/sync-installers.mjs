@@ -75,22 +75,32 @@ async function fileExists(path) {
   }
 }
 
-// Project the shared Braille globe at authoring time: shipped installers remain
+// Project the CLI's planet at authoring time: shipped installers remain
 // standalone Bash/PowerShell, with no renderer or JavaScript runtime dependency.
 function projectInstallerPlanet(source, filename) {
-  const marker = /^([ \t]*)# BEGIN GENERATED PLANET\n[\s\S]*?^[ \t]*# END GENERATED PLANET/m;
+  const marker = /^([ \t]*)# BEGIN GENERATED PLANET\r?\n[\s\S]*?^[ \t]*# END GENERATED PLANET/m;
   if (!source.includes('# BEGIN GENERATED PLANET')) return source;
   if (!marker.test(source)) throw new Error('Unterminated installer planet projection: ' + filename);
-  const frame = createPlanetFrame({ columns: 28, seconds: 1.6 });
-  const plain = frame.map((row) => row.map((cell) => cell?.ch ?? ' ').join(''));
-  const colored = frame.map((row) => row.map((cell) => cell
-    ? '\\033[38;2;' + cell.rgb.join(';') + 'm' + cell.ch
-    : ' ').join('') + '\\033[0m');
-  // Windows PowerShell 5.1 decodes BOM-less scripts using the legacy code page.
-  // Keep its source ASCII while constructing the same Unicode cells at runtime.
-  const powershellRow = (row) => row.replace(/[\u2800-\u28ff]/gu,
-    (ch) => '$([char]0x' + ch.charCodeAt(0).toString(16) + ')');
-  const lines = filename.endsWith('.sh')
+  // The settled, fully lit pose of the same planet `happier setup` animates.
+  const frame = createPlanetFrame({ columns: 28 });
+  const isShell = filename.endsWith('.sh');
+  // PowerShell 5.1 may decode a downloaded script with a legacy code page: spell each
+  // Braille cell as a code point so the generated block stays ASCII.
+  const glyph = (cell) => (isShell ? cell.ch : '$([char]0x' + cell.ch.codePointAt(0).toString(16) + ')');
+  const escape = isShell ? '\\033' : '$([char]27)';
+  const plain = frame.map((row) => row.map((cell) => (cell ? glyph(cell) : ' ')).join(''));
+  const colored = frame.map((row) => {
+    let line = '';
+    let current = '';
+    for (const cell of row) {
+      if (!cell) { line += ' '; continue; }
+      const sgr = escape + '[38;2;' + cell.rgb.join(';') + 'm';
+      if (sgr !== current) { line += sgr; current = sgr; }
+      line += glyph(cell);
+    }
+    return line + escape + '[0m';
+  });
+  const lines = isShell
     ? [
         'HAPPIER_INSTALLER_ART_ROWS=(',
         ...plain.map((row) => "  '" + row + "'"), ')',
@@ -99,15 +109,15 @@ function projectInstallerPlanet(source, filename) {
       ]
     : [
         '$rows = @(',
-        ...plain.map((row, index) => '  "' + powershellRow(row) + '"' + (index < plain.length - 1 ? ',' : '')), ')',
+        ...plain.map((row, index) => '  "' + row + '"' + (index < plain.length - 1 ? ',' : '')), ')',
         '$rgbRows = @(',
-        ...colored.map((row, index) => '  "' + powershellRow(row).replaceAll('\\033', '$([char]27)') + '"' + (index < colored.length - 1 ? ',' : '')), ')',
+        ...colored.map((row, index) => '  "' + row + '"' + (index < colored.length - 1 ? ',' : '')), ')',
       ];
   return source.replace(marker, (_match, indent) => [
     '# BEGIN GENERATED PLANET',
     ...lines,
     '# END GENERATED PLANET',
-  ].map((line) => indent + line).join('\n'));
+  ].map((line) => indent + line).join(source.includes('\r\n') ? '\r\n' : '\n'));
 }
 
 export async function syncInstallers({

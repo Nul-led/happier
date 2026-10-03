@@ -1,8 +1,23 @@
-import { bold, helpFormatter } from '@happier-dev/cli-common/output';
+import { banner, dim, helpFormatter, sectionTitle } from '@happier-dev/cli-common/output';
 
 import { listRootHelpCommands } from './commandSurfaceManifest';
 
 const HELP_LABEL_WIDTH = 27;
+
+const EXAMPLES = [
+  { label: 'happier', description: 'Start session' },
+  { label: 'happier --refresh-settings', description: 'Force-refresh account settings before starting' },
+  { label: 'happier --launch-profile <id-or-name>', description: 'Start with a launch profile from your settings' },
+  { label: 'happier --auth cs:<id>', description: 'Start with an exact Connected Services profile or pool' },
+  { label: 'happier --auth native', description: 'Start with native provider authentication' },
+  { label: 'happier --yolo', description: 'Start with bypassing permissions', detail: 'happier sugar for --dangerously-skip-permissions' },
+  { label: 'happier --chrome', description: 'Enable Chrome browser access for this session' },
+  { label: 'happier --no-chrome', description: 'Disable Chrome even if default is on' },
+  { label: 'happier --js-runtime bun', description: 'Use bun instead of node to spawn JavaScript-backed CLIs' },
+  { label: 'happier auth login --force', description: 'Authenticate' },
+  { label: 'happier profiles list', description: 'List available Agent profiles' },
+  { label: 'happier doctor', description: 'Run diagnostics' },
+] as const;
 
 export function buildRootHelpText(): string {
   const helpEntries = listRootHelpCommands();
@@ -14,34 +29,23 @@ export function buildRootHelpText(): string {
     })),
     { labelWidth: HELP_LABEL_WIDTH },
   );
+  const examples = helpFormatter.renderRows(EXAMPLES, { labelWidth: HELP_LABEL_WIDTH });
   return `
-${bold('happier')} - AI CLI On the Go
+${banner('Happier', { subtitle: 'Run, watch and steer your coding agents from any device.' })}
 
-${bold('Usage:')}
+${sectionTitle('Usage')}
 ${usage}
 
-${bold('Examples:')}
-  happier                    Start session
-  happier --refresh-settings  Force-refresh account settings before starting
-  happier --launch-profile <id-or-name> Start with a launch profile from your settings
-  happier --auth cs:<id>    Start with an exact Connected Services profile or pool
-  happier --auth native     Start with native provider authentication
-  happier --yolo             Start with bypassing permissions
-                              happier sugar for --dangerously-skip-permissions
-  happier --chrome           Enable Chrome browser access for this session
-  happier --no-chrome        Disable Chrome even if default is on
-  happier --js-runtime bun   Use bun instead of node to spawn JavaScript-backed CLIs
-  happier auth login --force Authenticate
-  happier profiles list      List available Agent profiles
-  happier doctor             Run diagnostics
+${sectionTitle('Examples')}
+${examples}
 
-${bold('Server selection (global flags; prefix-only; no persistence):')}
+${sectionTitle('Server selection')} ${dim('(global flags; prefix-only; no persistence)')}
   happier --server <name-or-id> ...
   happier --server-url <url> [--local-server-url <url>] [--webapp-url <url>] ...
 
-${bold('API Token authentication (global; prefix-only; never persisted):')}
+${sectionTitle('API Token authentication')} ${dim('(global; prefix-only; never persisted)')}
   happier --api-token <token> ...
   HAPPIER_TOKEN=<token> happier ...
-  Create API Tokens in Settings. They authorize broad account automation, not present-user approvals or security controls.
+  ${dim('Create API Tokens in Settings. They authorize broad account automation, not present-user approvals or security controls.')}
 `;
 }
