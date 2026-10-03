@@ -51,7 +51,8 @@ vi.mock('react-native', () => {
 });
 
 import { getDotSpinnerFrames, readDotSeries } from './dotSpinnerFrames.js';
-import { HappierSpinner } from './Spinner.js';
+import { HappierSpinner, HappierSpinnerHost, resolveHappierSpinnerPresentation } from './Spinner.js';
+import { DEFAULT_HAPPIER_SPINNER_TIMING } from './spinnerStyles.js';
 
 type RecordedInterpolation = { config: { inputRange: number[]; outputRange: Array<number | string> }; parent: unknown };
 
@@ -87,7 +88,7 @@ describe('HappierSpinner on native (dot styles)', () => {
   it('draws the H with seven native-driven dots whose opacity interpolates the frame table', () => {
     const root = render(<HappierSpinner size={18} color="red" />);
     const drawn = dots(root);
-    const frames = getDotSpinnerFrames('wave');
+    const frames = getDotSpinnerFrames('wave', DEFAULT_HAPPIER_SPINNER_TIMING);
 
     expect(root.root.findAllByType('ActivityIndicator' as never)).toHaveLength(0);
     expect(drawn).toHaveLength(7);
@@ -102,8 +103,20 @@ describe('HappierSpinner on native (dot styles)', () => {
 
     expect(runningLoops()).toHaveLength(1);
     expect(runningLoops()[0]!.animation).toEqual({
-      timing: expect.objectContaining({ toValue: 1, duration: 1300, useNativeDriver: true }),
+      timing: expect.objectContaining({ toValue: 1, duration: 1004, useNativeDriver: true }),
     });
+  });
+
+  it('runs a speed and pause on the shared clock for its played cycle: motion ÷ rate, then the pause', () => {
+    const spinner = (indicatorSpeed: string, indicatorPause: string) => {
+      const presentation = resolveHappierSpinnerPresentation({ platform: 'native', indicatorSpeed, indicatorPause, size: 16 });
+      if (!presentation) throw new Error('Expected a visible spinner');
+      return <HappierSpinnerHost presentation={presentation} hostProps={{ size: 16 }} />;
+    };
+    render(<>{spinner('fast', 'long')}{spinner('fast', 'long')}{spinner('slow', 'none')}</>);
+
+    const durations = runningLoops().map((loop) => (loop.animation as { timing: { duration: number } }).timing.duration);
+    expect(durations.sort((a, b) => a - b)).toEqual([Math.round(804 / 1.5 + 500), Math.round(804 / 0.75)]);
   });
 
   it('runs one shared clock for every spinner of a cycle and stops it when the last one leaves', () => {

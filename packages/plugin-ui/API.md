@@ -1139,6 +1139,8 @@ Declaration: `dist/presentation/index.d.ts`
 - value `HAPPIER_FIELD_TEXT_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_FRESHNESS_LINE_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_ICON_BUTTON_SIZE` from `dist/presentation/index.d.ts`
+- value `DEFAULT_HAPPIER_SPINNER_PAUSE_ID` from `dist/presentation/index.d.ts`
+- value `DEFAULT_HAPPIER_SPINNER_SPEED_ID` from `dist/presentation/index.d.ts`
 - value `DEFAULT_HAPPIER_SPINNER_STYLE_ID` from `dist/presentation/index.d.ts`
 - value `HAPPIER_ICON_NAMES` from `dist/presentation/index.d.ts`
 - value `HAPPIER_INSTANT_AGENT_CURSOR_MOTION` from `dist/presentation/index.d.ts`
@@ -1156,6 +1158,8 @@ Declaration: `dist/presentation/index.d.ts`
 - value `HAPPIER_STATE_LINE_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_STATE_SIZE_METRICS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_SWITCH_METRICS` from `dist/presentation/index.d.ts`
+- value `HAPPIER_SPINNER_PAUSE_IDS` from `dist/presentation/index.d.ts`
+- value `HAPPIER_SPINNER_SPEED_IDS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_SPINNER_STYLE_IDS` from `dist/presentation/index.d.ts`
 - value `HAPPIER_TONE_COLOR_TOKEN` from `dist/presentation/index.d.ts`
 - value `HAPPIER_WIDGET_FRAME_METRICS` from `dist/presentation/index.d.ts`
@@ -1411,9 +1415,11 @@ Declaration: `dist/presentation/index.d.ts`
 - value `HappierSpinner` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerDotBoxStyle` from `dist/presentation/index.d.ts`
 - value `HappierSpinnerHost` from `dist/presentation/index.d.ts`
+- type `HappierSpinnerPauseId` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerPresentation` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerPresentationInput` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerProps` from `dist/presentation/index.d.ts`
+- type `HappierSpinnerSpeedId` from `dist/presentation/index.d.ts`
 - type `HappierSpinnerStyleId` from `dist/presentation/index.d.ts`
 - value `HappierStack` from `dist/presentation/index.d.ts`
 - type `HappierStackProps` from `dist/presentation/index.d.ts`
@@ -1519,6 +1525,7 @@ Declaration: `dist/presentation/index.d.ts`
 - value `happierPageSheetShape` from `dist/presentation/index.d.ts`
 - value `happierPageTextMetrics` from `dist/presentation/index.d.ts`
 - value `happierPressTransitionStyle` from `dist/presentation/index.d.ts`
+- value `happierSpinnerStyleTimingControls` from `dist/presentation/index.d.ts`
 - value `iconMatchedSpinnerSize` from `dist/presentation/index.d.ts`
 - value `isHappierBannerUrgent` from `dist/presentation/index.d.ts`
 - value `isHappierFocusVisible` from `dist/presentation/index.d.ts`

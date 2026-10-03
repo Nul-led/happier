@@ -26,7 +26,8 @@ export type ActivitySpinnerProps = RNActivityIndicatorProps & Readonly<{
     animationEnabled?: boolean;
     /**
      * Draw this style instead of the one chosen in Settings → Appearance. Only for surfaces that
-     * show the styles themselves, such as that picker's previews.
+     * show the styles themselves, such as that picker's previews. The chosen speed and pause still
+     * apply, so the previews play as the real spinners will.
      */
     variant?: HappierSpinnerStyleId;
 }>;
@@ -37,7 +38,7 @@ export type ActivitySpinnerProps = RNActivityIndicatorProps & Readonly<{
  * The shared presentation owner decides what every spinner draws and how it moves
  * (`resolveHappierSpinnerPresentation`) and renders it (`HappierSpinnerHost`). This adapter
  * preserves the complete core host style contract and injects core's facts: the Unistyles
- * colour and accents, the style chosen in Settings → Appearance, the app-wide reduced-motion
+ * colour and accents, the style, speed and pause chosen in Settings → Appearance, the app-wide reduced-motion
  * preference, a localized accessible name, and whether anyone can see the window.
  *
  * A window nobody can see (a hidden tab, a backgrounded app, a hidden desktop window) gets a still
@@ -49,6 +50,8 @@ export type ActivitySpinnerProps = RNActivityIndicatorProps & Readonly<{
 export function ActivitySpinner(props: ActivitySpinnerProps) {
     const { theme } = useUnistyles();
     const storedStyle = useLocalSetting('loadingIndicatorStyle');
+    const storedSpeed = useLocalSetting('loadingIndicatorSpeed');
+    const storedPause = useLocalSetting('loadingIndicatorPause');
     const reducedMotion = useReducedMotionPreference();
     const hostActivelyViewed = useHostActivelyViewed();
     const {
@@ -73,6 +76,8 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
         color,
         size,
         indicatorStyle: variant ?? storedStyle,
+        indicatorSpeed: storedSpeed,
+        indicatorPause: storedPause,
         auroraAccents,
         animating,
         animationEnabled: animationEnabled && hostActivelyViewed,

@@ -5187,6 +5187,22 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             aurora: "極光",
             classicRing: "經典圓環",
         },
+        loadingIndicatorSpeed: "速度",
+        loadingIndicatorSpeedDescription: "光點在圓點間移動的快慢",
+        loadingIndicatorSpeedOptions: {
+            slow: "慢",
+            normal: "正常",
+            fast: "快",
+        },
+        loadingIndicatorPause: "停頓",
+        loadingIndicatorPauseDescription: "每輪循環前圓點停歇的時長",
+        loadingIndicatorPauseOptions: {
+            none: "無",
+            short: "短",
+            long: "長",
+        },
+        loadingIndicatorPauseUnavailable: "此樣式連續循環，不會停頓。",
+        loadingIndicatorSpeedUnavailable: "經典圓環以固定的節奏轉動。",
         avatarStyle: '頭像風格',
         avatarStyleDescription: '選擇工作階段頭像外觀',
         avatarOptions: {

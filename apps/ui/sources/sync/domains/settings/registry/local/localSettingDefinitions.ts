@@ -6,7 +6,14 @@ import {
     UiSurfaceCapabilityRequestV1Schema,
     UiSurfaceExecutableApprovalKeyV1Schema,
 } from '@happier-dev/protocol/plugins/ui';
-import { DEFAULT_HAPPIER_SPINNER_STYLE_ID, HAPPIER_SPINNER_STYLE_IDS } from '@happier-dev/plugin-ui/presentation';
+import {
+    DEFAULT_HAPPIER_SPINNER_PAUSE_ID,
+    DEFAULT_HAPPIER_SPINNER_SPEED_ID,
+    DEFAULT_HAPPIER_SPINNER_STYLE_ID,
+    HAPPIER_SPINNER_PAUSE_IDS,
+    HAPPIER_SPINNER_SPEED_IDS,
+    HAPPIER_SPINNER_STYLE_IDS,
+} from '@happier-dev/plugin-ui/presentation';
 import { z } from 'zod';
 import { ACTIVITY_SURFACE_LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions.activitySurfaces';
 import { LAYOUT_LOCAL_SETTING_DEFINITIONS } from './localSettingDefinitions.layout';
@@ -142,6 +149,21 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: z.enum(HAPPIER_SPINNER_STYLE_IDS).catch(DEFAULT_HAPPIER_SPINNER_STYLE_ID),
         default: DEFAULT_HAPPIER_SPINNER_STYLE_ID,
         description: 'Which loading indicator spinners draw: one of the dot H styles, or the classic ring',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    loadingIndicatorSpeed: {
+        // `.catch` for the same reason as the style: an unknown value must not reset other settings.
+        schema: z.enum(HAPPIER_SPINNER_SPEED_IDS).catch(DEFAULT_HAPPIER_SPINNER_SPEED_ID),
+        default: DEFAULT_HAPPIER_SPINNER_SPEED_ID,
+        description: 'How fast dot loading indicators play: slow, normal or fast',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    loadingIndicatorPause: {
+        schema: z.enum(HAPPIER_SPINNER_PAUSE_IDS).catch(DEFAULT_HAPPIER_SPINNER_PAUSE_ID),
+        default: DEFAULT_HAPPIER_SPINNER_PAUSE_ID,
+        description: 'How long dot loading indicators rest between loops: none, short or long',
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
     },

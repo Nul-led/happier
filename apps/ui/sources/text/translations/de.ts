@@ -6004,6 +6004,22 @@ export const de: TranslationStructure = {
             aurora: "Polarlicht",
             classicRing: "Klassischer Ring",
         },
+        loadingIndicatorSpeed: "Geschwindigkeit",
+        loadingIndicatorSpeedDescription: "Wie schnell das Licht durch die Punkte läuft",
+        loadingIndicatorSpeedOptions: {
+            slow: "Langsam",
+            normal: "Normal",
+            fast: "Schnell",
+        },
+        loadingIndicatorPause: "Pause",
+        loadingIndicatorPauseDescription: "Wie lange die Punkte vor jedem Durchlauf ruhen",
+        loadingIndicatorPauseOptions: {
+            none: "Keine",
+            short: "Kurz",
+            long: "Lang",
+        },
+        loadingIndicatorPauseUnavailable: "Dieser Stil läuft ohne Pause durch.",
+        loadingIndicatorSpeedUnavailable: "Der klassische Ring dreht sich in seinem eigenen festen Tempo.",
         avatarStyle: 'Avatar-Stil',
         avatarStyleDescription: 'Wähl das Aussehen der Session-Avatare',
         avatarOptions: {

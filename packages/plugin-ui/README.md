@@ -300,6 +300,11 @@ not host-only or plugin-private.
 Spinner presentation belongs to `presentation/feedback/Spinner.tsx`:
 `resolveHappierSpinnerPresentation` decides the mark and motion, and
 `HappierSpinnerHost` renders that decision for both core and plugin adapters.
+Dot timing belongs to `presentation/feedback/spinnerStyles.ts`: a resting style
+plays its motion (first dot lit until the last dot is back at rest) at the
+chosen speed, then rests for the chosen pause in absolute milliseconds;
+continuous styles take the speed only. Frame tables are shared per style, speed
+and pause, and native clocks per played cycle length.
 The renderer preserves each host's styles and native color values. On Android,
 the classic ring keeps its native widget and still overlay mounted together,
 so pausing motion preserves the visible mark and native layout. On native

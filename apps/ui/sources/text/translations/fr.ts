@@ -5671,6 +5671,22 @@ export const fr = {
       aurora: "Aurore",
       classicRing: "Anneau classique",
     },
+    loadingIndicatorSpeed: "Vitesse",
+    loadingIndicatorSpeedDescription: "La vitesse à laquelle la lumière parcourt les points",
+    loadingIndicatorSpeedOptions: {
+      slow: "Lente",
+      normal: "Normale",
+      fast: "Rapide",
+    },
+    loadingIndicatorPause: "Pause",
+    loadingIndicatorPauseDescription: "Durée de repos des points avant chaque boucle",
+    loadingIndicatorPauseOptions: {
+      none: "Aucune",
+      short: "Courte",
+      long: "Longue",
+    },
+    loadingIndicatorPauseUnavailable: "Ce style tourne en boucle sans repos.",
+    loadingIndicatorSpeedUnavailable: "L'anneau classique tourne à son propre rythme fixe.",
     avatarStyle: "Style d’avatar",
     avatarStyleDescription: "Choisis l’apparence des avatars de session",
     avatarOptions: {
