@@ -58,7 +58,6 @@ describe('createActionExecutor (session control)', () => {
       {
         sessionId: 's1',
         message: 'Hello',
-        localId: 'claim-1',
         permissionModeOverride: 'read_only',
         modelOverride: 'gpt-4o',
         requestedAction: { v: 1, kind: 'send_now' },
@@ -72,7 +71,6 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 's1',
       message: 'Hello',
-      localId: 'claim-1',
       permissionModeOverride: 'read_only',
       modelOverride: 'gpt-4o',
       requestedAction: { v: 1, kind: 'send_now' },

@@ -10,49 +10,6 @@ vi.mock('@/session/actions/createCliActionExecutorFromCredentials', () => ({
 }));
 
 describe('happier session send (action executor)', () => {
-  it('routes through ActionExecutor with the expected action id and args', async () => {
-    execute.mockResolvedValueOnce({
-      ok: true,
-      result: { ok: true, sessionId: 'sess-1', localId: 'local-1', waited: false },
-    });
-
-    const { handleSessionCommand } = await import('./handleSessionCommand');
-
-    const output = captureConsoleJsonOutput();
-    try {
-      await handleSessionCommand(['send', 'sess-1', 'Hello', '--permission-mode', 'read_only', '--model', 'gpt-4o', '--local-id', 'claim-1', '--wait', '--timeout', '30', '--json'], {
-        readCredentialsFn: async () => ({
-          token: 'token_test',
-          encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) },
-        }),
-      });
-
-      expect(createCliActionExecutorFromCredentials).toHaveBeenCalledTimes(1);
-      expect(execute).toHaveBeenCalledWith(
-        'session.message.send',
-        expect.objectContaining({
-          sessionId: 'sess-1',
-          message: 'Hello',
-          permissionModeOverride: 'read-only',
-          modelOverride: 'gpt-4o',
-          localId: 'claim-1',
-          wait: true,
-          timeoutSeconds: 30,
-        }),
-        { surface: 'cli', defaultSessionId: null },
-      );
-
-      const parsed = output.json();
-      expect(parsed).toEqual(expect.objectContaining({
-        ok: true,
-        kind: 'session_send',
-        data: { sessionId: 'sess-1', localId: 'local-1', waited: false },
-      }));
-    } finally {
-      output.restore();
-    }
-  });
-
   it('treats --local-id after the option terminator as the literal message', async () => {
     const readCredentialsFn = vi.fn(async () => null);
     const { handleSessionCommand } = await import('./handleSessionCommand');

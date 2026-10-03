@@ -11,8 +11,9 @@ const { mockIo } = vi.hoisted(() => ({ mockIo: vi.fn() }));
 // Only relay HTTP and socket transports are substituted; the send owners are real.
 vi.mock('socket.io-client', () => ({ io: mockIo }));
 
-it('keeps JSON output and waits for completion with options after a literal message terminator', async () => {
+it('delivers the caller-selected local id and waits with options after a literal message terminator', async () => {
   const sessionId = 'c123456789012345678901234';
+  const selectedLocalId = 'claim-1';
   const app = Fastify();
   let localId = '';
   const user = () => ({ id: 'msg-user', seq: 1, localId, createdAt: 1, updatedAt: 1,
@@ -54,11 +55,12 @@ it('keeps JSON output and waits for completion with options after a literal mess
   const output = captureConsoleJsonOutput();
   try {
     reloadConfiguration();
-    await handleSessionCommand(['send', sessionId, '--', '-message', '--json', '--wait'], {
+    await handleSessionCommand(['send', sessionId, '--local-id', selectedLocalId, '--', '-message', '--json', '--wait'], {
       readCredentialsFn: async () => ({ token: 'fixture_token',
         encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) } }),
     });
-    expect(output.json()).toMatchObject({ ok: true, kind: 'session_send', data: { sessionId, localId, waited: true } });
+    expect(user()).toMatchObject({ localId: selectedLocalId, content: { t: 'plain', v: { content: { text: '-message' } } } });
+    expect(output.json()).toMatchObject({ ok: true, kind: 'session_send', data: { sessionId, localId: selectedLocalId, waited: true } });
   } finally {
     output.restore();
     restoreHttp();
