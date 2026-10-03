@@ -1,6 +1,14 @@
 import { resolve as resolvePath } from 'node:path';
 
 import { systemTasks } from '@happier-dev/cli-common';
+import {
+  formatPinnedDaemonServiceRestartCommand,
+  planServiceDaemonsRestartAfterCliUpdate,
+  resolveManagedCliToolNameForRing,
+  STANDARD_MANAGED_CLI_RELEASE_CHANNEL_ENV_KEYS,
+  type ServiceDaemonBeforeCliUpdate,
+  type ManagedCliUpdateRestart,
+} from '@happier-dev/cli-common/firstPartyRuntime';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/providers';
 import { createServerUrlComparableKey, DoctorSnapshotDaemonStatusSchema, type DoctorSnapshotDaemonStatus } from '@happier-dev/protocol';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
@@ -235,6 +243,7 @@ export type SetupCliScope = Readonly<{
 }>;
 
 const INHERITED_RELAY_SELECTOR_ENV_KEYS = [
+  ...STANDARD_MANAGED_CLI_RELEASE_CHANNEL_ENV_KEYS,
   'HAPPIER_SERVER_URL',
   'HAPPIER_WEBAPP_URL',
   'HAPPIER_LOCAL_SERVER_URL',
@@ -246,6 +255,18 @@ const INHERITED_RELAY_SELECTOR_ENV_KEYS = [
   // service the run never chose.
   'HAPPIER_DAEMON_SERVICE_TARGET_MODE',
   'HAPPIER_DAEMON_SERVICE_INSTANCE_ID',
+  'HAPPIER_DAEMON_SERVICE_SERVER_URL',
+  'HAPPIER_DAEMON_SERVICE_WEBAPP_URL',
+  'HAPPIER_DAEMON_SERVICE_PUBLIC_SERVER_URL',
+  'HAPPIER_DAEMON_SERVICE_CHANNEL',
+  'HAPPIER_DAEMON_SERVICE_NODE_PATH',
+  'HAPPIER_DAEMON_SERVICE_ENTRY_PATH',
+  'HAPPIER_DAEMON_SERVICE_PLATFORM',
+  'HAPPIER_DAEMON_SERVICE_UID',
+  'HAPPIER_DAEMON_SERVICE_USER_HOME_DIR',
+  'HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR',
+  'HAPPIER_DAEMON_SERVICE_MODE',
+  'HAPPIER_DAEMON_SERVICE_SYSTEM_USER',
   // Stamps a service definition as the desktop's; only the connect-too install sets it.
   'HAPPIER_DAEMON_SERVICE_MANAGED_BY',
   // R16 — the desktop app a service belongs to; set only on the desktop's own installs.
@@ -324,11 +345,14 @@ async function runInvocationJsonCommand(params: Readonly<{
   /** Added on top of the invocation's (or the cleared inherited) env for this one command. */
   extraEnv?: Readonly<Record<string, string>>;
 }>): Promise<unknown> {
+  const processEnv = { ...(params.invocation?.processEnv ?? clearInheritedRelaySelectors(process.env)), ...(params.extraEnv ?? {}) };
+  for (const key of STANDARD_MANAGED_CLI_RELEASE_CHANNEL_ENV_KEYS) delete processEnv[key];
+  processEnv.HAPPIER_PUBLIC_RELEASE_CHANNEL = resolveLocalHappierCliReleaseRing({ appRing: params.releaseRing, processEnv });
   return await runLocalHappierJsonCommand({
     args: params.args,
     releaseRing: params.releaseRing,
     ...(params.invocation ? { cli: params.invocation } : {}),
-    processEnv: { ...(params.invocation?.processEnv ?? clearInheritedRelaySelectors(process.env)), ...(params.extraEnv ?? {}) },
+    processEnv,
     signal: params.invocation?.signal,
     ...(params.allowJsonFailure ? { allowJsonFailure: true } : {}),
   });
@@ -906,9 +930,7 @@ export async function readPinnedDaemonServices(
     inventory = readPinnedDaemonServiceInventory(
       await runInvocationJsonCommand({ args: ['daemon', 'service', 'list', '--json'], releaseRing, invocation: cli }),
       {
-        channel: cli.provenance === 'managed'
-          ? resolveLocalHappierCliReleaseRing({ appRing: releaseRing, processEnv: process.env })
-          : releaseRing,
+        channel: resolveLocalHappierCliReleaseRing({ appRing: releaseRing, processEnv: process.env }),
         happierHomeDir: resolveHappyHomeDirFromEnvironment(process.env),
       },
     );
@@ -967,9 +989,7 @@ export async function readPinnedServiceInventory(
     inventory = readPinnedDaemonServiceInventory(
       await runInvocationJsonCommand({ args: ['daemon', 'service', 'list', '--json'], releaseRing, invocation: cli }),
       {
-        channel: cli.provenance === 'managed'
-          ? resolveLocalHappierCliReleaseRing({ appRing: releaseRing, processEnv: process.env })
-          : releaseRing,
+        channel: resolveLocalHappierCliReleaseRing({ appRing: releaseRing, processEnv: process.env }),
         happierHomeDir: resolveHappyHomeDirFromEnvironment(process.env),
       },
     );
@@ -1164,4 +1184,78 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener('abort', abortHandler, { once: true });
   });
+}
+
+/** One service as the CLI reports it before the update, for the shared restart rule. */
+function observeService(
+  label: string,
+  status: DaemonStatusSnapshot,
+  invocation: LocalHappierCliInvocation,
+  managedBy: 'desktop' | null = null,
+  restartCommand?: string,
+): ServiceDaemonBeforeCliUpdate<LocalHappierCliInvocation> {
+  return {
+    label,
+    managedBy,
+    ...(restartCommand ? { restartCommand } : {}),
+    serviceInstalled: status.service.installed,
+    daemonRunning: status.daemon.running,
+    serviceManaged: status.daemon.serviceManaged === true,
+    target: invocation,
+  };
+}
+
+/** Shared bootstrap service observation and restart proof for explicit and setup-floor updates. */
+export async function planLocalHappierCliUpdateRestart(params: Readonly<{
+  current: SetupCapableLocalHappierCli;
+  releaseRing: PublicReleaseRingId;
+  processEnv?: NodeJS.ProcessEnv;
+  emit?: (event: unknown) => void;
+}>): Promise<ManagedCliUpdateRestart | null> {
+  const { current, releaseRing } = params;
+  const processEnv = params.processEnv ?? process.env;
+  const reportProgress = (message: string) => {
+    if (params.emit) params.emit({ type: 'progress', stepId: 'cli.update.restartServices', message });
+    else process.stderr.write(`[happier] ${message}\n`);
+  };
+  const service = createSelectedCliInvocation({ cli: current, processEnv });
+  const [status, pinned] = await Promise.all([
+    readDaemonStatus(releaseRing, service),
+    readPinnedDaemonServices(releaseRing, service),
+  ]);
+  // M6 — an incomplete inventory is not "no pinned daemons": the relays whose service could
+  // not be read (or a list the CLI could not give) are named on the run's own event stream,
+  // since those daemons keep the previous CLI until their next restart.
+  if (!pinned.complete) {
+    const unreadable = pinned.items.filter((item) => item.status === null).map((item) => item.service.relayUrl);
+    reportProgress(unreadable.length > 0
+        ? `Could not read the background services for ${unreadable.join(', ')}; they keep running the previous version until they restart.`
+        : 'Could not list this computer\'s other background services; any of them keeps running the previous version until it restarts.');
+  }
+  // Which daemons come back is the shared rule `happier self update` uses too.
+  return planServiceDaemonsRestartAfterCliUpdate({
+    defaultFollowing: observeService('default', status, service),
+    // A pinned service whose status could not be read is not known to run a daemon; the
+    // desktop update stops no daemon, so it keeps running (and self-restarts on version drift).
+    pinned: pinned.items.flatMap((item) => item.status
+      ? [observeService(item.service.instanceId, item.status, item.invocation, item.service.managedBy, formatPinnedDaemonServiceRestartCommand({
+        // The update runs only on a managed CLI, whose command is its ring's.
+        toolName: resolveManagedCliToolNameForRing(resolveLocalHappierCliReleaseRing({ appRing: releaseRing, processEnv })),
+        serverId: item.service.activeServerId,
+        instanceId: item.service.instanceId,
+      }))]
+      : []),
+    // The update owner checks cancellation before activation. Once activated, its restart
+    // and possible restore must settle before reporting cancellation, not race a rollback.
+    restartAndProve: async (invocation, expectedVersion) => {
+      await controlDaemonService(releaseRing, { action: 'restart', takeover: false }, invocation);
+      const restartedStatus = await readDaemonStatus(releaseRing, invocation);
+      const runningVersion = restartedStatus.daemon.startedWithCliVersion;
+      if (!restartedStatus.daemon.running || runningVersion !== expectedVersion) {
+        throw new Error(`the background service runs ${runningVersion ?? 'no daemon'} instead of ${expectedVersion}`);
+      }
+    },
+    // A service the user installed is restarted too, but it never rolls the desktop's update back.
+    reportUnownedRestartFailure: reportProgress,
+  }).restart;
 }

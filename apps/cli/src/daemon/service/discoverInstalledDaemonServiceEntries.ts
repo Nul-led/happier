@@ -246,37 +246,23 @@ function readWindowsScheduledTaskWrapperPath(taskName: string): string | null {
   const normalizedTaskName = normalizeWindowsScheduledTaskName(taskName);
   if (!normalizedTaskName) return null;
 
+  const result = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/XML']);
+  const xmlPath = !result.error && result.status === 0
+    ? parseWindowsScheduledTaskWrapperPathFromXml(String(result.stdout ?? '')) : null;
+  if (xmlPath) return xmlPath;
+  const fallback = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/FO', 'LIST', '/V']);
+  const listPath = !fallback.error && fallback.status === 0
+    ? parseWindowsScheduledTaskWrapperPathFromTaskToRun(String(fallback.stdout ?? '')) : null;
+  if (listPath) return listPath;
+
+  // Failed detail reads cannot prove absence. A successful listing can establish that a task
+  // disappeared between enumeration and inspection, without parsing localized error messages.
   try {
-    const result = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/XML']);
-    if (result.status !== 0) {
-      const fallback = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/FO', 'LIST', '/V']);
-      if (fallback.status !== 0) {
-        return null;
-      }
-      return parseWindowsScheduledTaskWrapperPathFromTaskToRun(String(fallback.stdout ?? ''));
-    }
-    return parseWindowsScheduledTaskWrapperPathFromXml(String(result.stdout ?? ''))
-      ?? (() => {
-        const fallback = runWindowsSchtasksCommand(['/Query', '/TN', normalizedTaskName, '/FO', 'LIST', '/V']);
-        if (fallback.status !== 0) {
-          return null;
-        }
-        return parseWindowsScheduledTaskWrapperPathFromTaskToRun(String(fallback.stdout ?? ''));
-      })();
-  } catch {
-    return null;
+    if (!listWindowsScheduledTaskNames().some((name) => name.toLowerCase() === normalizedTaskName.toLowerCase())) return null;
+  } catch (error) {
+    throw new Error(`Could not inspect Happier scheduled task ${normalizedTaskName}`, { cause: error });
   }
-}
-
-function deriveWindowsScheduledTaskWrapperPath(taskName: string, servicesDir: string): string | null {
-  const normalizedTaskName = normalizeWindowsScheduledTaskName(taskName);
-  if (!normalizedTaskName) return null;
-
-  const resolvedWrapperPath = readWindowsScheduledTaskWrapperPath(normalizedTaskName);
-  if (resolvedWrapperPath) {
-    return resolvedWrapperPath;
-  }
-  return null;
+  throw new Error(`Could not inspect Happier scheduled task ${normalizedTaskName}: ${String(fallback.stderr ?? result.stderr ?? '').trim() || 'its wrapper could not be read'}`, { cause: fallback.error ?? result.error });
 }
 
 function deriveWindowsServiceHomeDirFromWrapperPath(wrapperPath: string | null): string | null {
@@ -291,7 +277,7 @@ function deriveWindowsServiceHomeDirFromWrapperPath(wrapperPath: string | null):
   return normalizedPath.slice(0, index);
 }
 
-function listWindowsScheduledTaskWrapperPaths(servicesDir: string): readonly string[] {
+function listWindowsScheduledTaskNames(): readonly string[] {
   const result = runWindowsSchtasksCommand(['/Query', '/FO', 'CSV', '/NH']);
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -304,8 +290,18 @@ function listWindowsScheduledTaskWrapperPaths(servicesDir: string): readonly str
     .filter((taskName): taskName is string => Boolean(taskName))
     .map((taskName) => normalizeWindowsScheduledTaskName(taskName))
     .filter((taskName): taskName is string => Boolean(taskName))
-    .filter((taskName) => taskName.toLowerCase().startsWith('happier\\happier-daemon'))
-    .map((taskName) => deriveWindowsScheduledTaskWrapperPath(taskName, servicesDir))
+    .filter((taskName) => taskName.toLowerCase().startsWith('happier\\happier-daemon'));
+}
+
+function listWindowsScheduledTaskWrapperPaths(): readonly string[] {
+  return listWindowsScheduledTaskNames()
+    .map((taskName) => {
+      try {
+        return readWindowsScheduledTaskWrapperPath(taskName);
+      } catch (cause) {
+        throw new Error(`Could not inspect Happier scheduled task ${taskName}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+      }
+    })
     .filter((wrapperPath): wrapperPath is string => Boolean(wrapperPath));
 }
 
@@ -580,13 +576,16 @@ export async function discoverInstalledDaemonServiceEntries(params: Readonly<{
   try {
     fileNames = fs.readdirSync(servicesDir);
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return [];
-    throw inventoryUnavailable(error);
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      if (params.platform !== 'win32') return [];
+    } else {
+      throw inventoryUnavailable(error);
+    }
   }
 
   let scheduledTaskPaths: readonly string[] = [];
   try {
-    if (params.platform === 'win32') scheduledTaskPaths = listWindowsScheduledTaskWrapperPaths(servicesDir);
+    if (params.platform === 'win32') scheduledTaskPaths = listWindowsScheduledTaskWrapperPaths();
   } catch (error) {
     throw inventoryUnavailable(error);
   }

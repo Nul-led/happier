@@ -30,6 +30,7 @@ import {
   type ResolvedLocalFirstPartyCommand,
 } from './localFirstPartyCommand.js';
 import { CommandTimeoutError, parseFirstJsonObject, runCommandCapture } from './taskRuntime.js';
+import { planLocalHappierCliUpdateRestart } from './localDaemonCli.js';
 
 const DEFAULT_ENV_VAR_NAMES = [
   'HAPPIER_BOOTSTRAP_CLI_PATH',
@@ -267,6 +268,7 @@ export async function resolveVersionedLocalHappierCli(
   params: FirstPartyAcquisitionOptions & Readonly<{
     releaseRing: PublicReleaseRingId;
     processEnv?: NodeJS.ProcessEnv;
+    assertAcceptableVersion?: (versionId: string) => void;
   }>,
   overrides: LocalHappierCliResolutionOverrides = {},
 ): Promise<SetupCapableLocalHappierCli> {
@@ -274,7 +276,7 @@ export async function resolveVersionedLocalHappierCli(
   const cliParams = resolveHappierCliParams({ ...params, processEnv });
   const readVersion = overrides.readVersion ?? readLocalHappierCliVersion;
   const resolved = resolveExplicitOrInstalledLocalFirstPartyCommand(cliParams)
-    ?? await acquireManagedLocalFirstPartyComponentCommand(cliParams, overrides);
+    ?? await acquireManagedLocalFirstPartyComponentCommand({ ...cliParams, assertAcceptableVersion: params.assertAcceptableVersion }, overrides);
   params.signal?.throwIfAborted();
   params.onProgress?.({ phase: 'checkingCli' });
   return { ...resolved, version: await readVersion({ command: resolved.command, processEnv }) };
@@ -282,8 +284,8 @@ export async function resolveVersionedLocalHappierCli(
 
 /**
  * Resolve a Happier CLI that desktop setup may drive: report its provenance (R13) and enforce
- * the setup version floor. A managed CLI below the floor is reacquired once through the verified
- * release path; an override is development-only and is never reacquired.
+ * the setup version floor. An installed managed CLI below the floor uses the same recoverable
+ * update transaction as the explicit Update action; a missing CLI keeps the acquisition path.
  */
 export async function ensureSetupCapableLocalHappierCli(
   params: FirstPartyAcquisitionOptions & Readonly<{
@@ -294,11 +296,15 @@ export async function ensureSetupCapableLocalHappierCli(
 ): Promise<SetupCapableLocalHappierCli> {
   const processEnv = params.processEnv ?? process.env;
   const cliParams = resolveHappierCliParams({ ...params, processEnv });
-  const readVersion = overrides.readVersion ?? readLocalHappierCliVersion;
+  const assertAcceptableVersion = (versionId: string) => {
+    if (!meetsSetupVersionFloor(versionId)) {
+      throw belowSetupFloorError({ releaseRing: cliParams.releaseRing, appRing: params.releaseRing, version: versionId });
+    }
+  };
 
   const choice = readHappierCliChoiceSync({ processEnv });
   const keptCommand = choice?.mode === 'own' ? choice.command : null;
-  const resolved = await resolveVersionedLocalHappierCli(params, overrides).catch((error: unknown) => {
+  const resolved = await resolveVersionedLocalHappierCli({ ...params, assertAcceptableVersion }, overrides).catch((error: unknown) => {
     // A kept CLI that cannot even report its version cannot drive setup either; it stays the
     // person's to update, so it ends in the same named failure as one below the floor.
     const unresolved = resolveExplicitOrInstalledLocalFirstPartyCommand(cliParams);
@@ -324,26 +330,13 @@ export async function ensureSetupCapableLocalHappierCli(
     );
   }
 
-  const reacquired = await acquireManagedLocalFirstPartyComponentCommand({
-    ...cliParams,
-    // The release path resolves the ring's newest version before it downloads or promotes
-    // anything, so a ring that cannot satisfy the floor fails here. Installing first would
-    // re-download and re-promote a CLI setup cannot drive on every attempt, and fail anyway.
-    // An unparseable version id proves nothing about the ring, so it is left to the installed
-    // binary's own `--version` below.
-    assertAcceptableVersion: (versionId) => {
-      if (normalizeSemverBase(versionId) !== null && !meetsSetupVersionFloor(versionId)) {
-        throw belowSetupFloorError({ releaseRing: cliParams.releaseRing, appRing: params.releaseRing, version: versionId });
-      }
-    },
+  const { cli } = await updateManagedLocalHappierCli({
+    ...params,
+    processEnv,
+    assertAcceptableVersion,
+    planRestart: (current) => planLocalHappierCliUpdateRestart({ current, releaseRing: params.releaseRing, processEnv }),
   }, overrides);
-  params.signal?.throwIfAborted();
-  params.onProgress?.({ phase: 'checkingCli' });
-  const reacquiredVersion = await readVersion({ command: reacquired.command, processEnv });
-  if (meetsSetupVersionFloor(reacquiredVersion)) {
-    return { ...reacquired, version: reacquiredVersion };
-  }
-  throw belowSetupFloorError({ releaseRing: cliParams.releaseRing, appRing: params.releaseRing, version: reacquiredVersion });
+  return cli;
 }
 
 /** A `happier` this app did not install, named with the commands that remove or update it (R12). */
@@ -501,6 +494,7 @@ export async function updateManagedLocalHappierCli(
     processEnv?: NodeJS.ProcessEnv;
     /** The proven restart of the service daemon for this CLI, or `null` when its daemon is not running. */
     planRestart: (current: SetupCapableLocalHappierCli) => Promise<ManagedCliUpdateRestart | null>;
+    assertAcceptableVersion?: (versionId: string) => void;
   }>,
   overrides: LocalHappierCliResolutionOverrides = {},
 ): Promise<Readonly<{ previousVersion: string; cli: SetupCapableLocalHappierCli; restarted: boolean }>> {
@@ -528,7 +522,16 @@ export async function updateManagedLocalHappierCli(
     processEnv,
     signal: params.signal,
     onProgress,
-    preparePayload: async (prepareParams) => await preparePayload(prepareParams),
+    preparePayload: async (prepareParams) => {
+      const prepared = await preparePayload(prepareParams);
+      try {
+        params.assertAcceptableVersion?.(prepared.versionId);
+        return prepared;
+      } catch (error) {
+        await prepared.cleanup();
+        throw error;
+      }
+    },
     readVersion: async (command) => await readVersion({ command, processEnv }).catch(() => null),
     restartServiceDaemon,
   }).catch((error: unknown) => {

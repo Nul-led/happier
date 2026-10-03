@@ -4,26 +4,22 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 
-import type { ManagedCliUpdateRestart } from '@happier-dev/cli-common/firstPartyRuntime';
-
-const { runLocalHappierJsonCommandMock, updateManagedLocalHappierCliMock } = vi.hoisted(() => ({
-  runLocalHappierJsonCommandMock: vi.fn(),
-  updateManagedLocalHappierCliMock: vi.fn(),
+const { runCommandCaptureMock } = vi.hoisted(() => ({
+  runCommandCaptureMock: vi.fn(),
 }));
 
-// The Happier CLI is a subprocess boundary. The update transaction itself is proven at its owner
-// (cli-common `runManagedCliUpdate`, and `updateManagedLocalHappierCli` in happierCli.test.ts);
-// here the stand-in hands the kind's restart plan to the transaction the way it does.
-vi.mock('../happierCli.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../happierCli.js')>();
+// Only the OS process boundary is replaced; CLI parsing, service observation and the shared
+// restart policy stay real. The transaction is exercised in setupFloor.integration and cli-common.
+vi.mock('../taskRuntime.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../taskRuntime.js')>();
   return {
     ...actual,
-    runLocalHappierJsonCommand: runLocalHappierJsonCommandMock,
-    updateManagedLocalHappierCli: updateManagedLocalHappierCliMock,
+    runCommandCapture: runCommandCaptureMock,
   };
 });
 
 import { createCliUpdateHandler } from './cliUpdate.js';
+import { planLocalHappierCliUpdateRestart } from '../localDaemonCli.js';
 
 const CURRENT_CLI = { command: '/home/user/.happier/cli/current/happier', provenance: 'managed' as const, version: '0.2.13' };
 
@@ -49,16 +45,7 @@ function statusJson(params: Readonly<{ running: boolean; serviceManaged: boolean
   };
 }
 
-/** The transaction's use of the plan: restart onto the target, and report what it proved. */
-function transactionStandIn(targetVersion: string) {
-  return async (params: Readonly<{ planRestart: (current: typeof CURRENT_CLI) => Promise<ManagedCliUpdateRestart | null> }>) => {
-    const restart = await params.planRestart(CURRENT_CLI);
-    await restart?.({ expectedVersion: targetVersion, phase: 'activated' });
-    return { previousVersion: CURRENT_CLI.version, cli: { ...CURRENT_CLI, version: targetVersion }, restarted: restart !== null };
-  };
-}
-
-type CliCall = Readonly<{ args: readonly string[]; processEnv?: NodeJS.ProcessEnv }>;
+type CliCall = Readonly<{ command: string; args: readonly string[]; env?: NodeJS.ProcessEnv }>;
 
 /**
  * Answers the CLI by what it was asked: each service's status reads in order (the default-following
@@ -70,10 +57,10 @@ function answerCli(params: Readonly<{
   pinned?: Readonly<Record<string, Readonly<{ relayUrl: string; statuses: readonly unknown[]; unreadable?: boolean; managedBy?: 'desktop' | null }>>>;
 }>): void {
   const reads = new Map<string, number>();
-  runLocalHappierJsonCommandMock.mockImplementation(async (call: CliCall) => {
+  runCommandCaptureMock.mockImplementation(async (call: CliCall) => {
     const command = call.args.join(' ');
     if (command === 'daemon service list --json') {
-      return {
+      const inventory = {
         entries: Object.entries(params.pinned ?? {}).map(([instance, service]) => ({
           serverId: instance,
           activeServerId: instance,
@@ -84,48 +71,46 @@ function answerCli(params: Readonly<{
           managedBy: service.managedBy ?? null,
         })),
       };
+      return { status: 0, stdout: JSON.stringify(inventory), stderr: '' };
     }
     if (command !== 'daemon status --json') {
-      return { ok: true };
+      return { status: 0, stdout: JSON.stringify({ ok: true }), stderr: '' };
     }
-    const instance = call.processEnv?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID ?? 'default';
+    const instance = call.env?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID ?? 'default';
     if (instance !== 'default' && params.pinned?.[instance]?.unreadable) {
       throw new Error('unreadable service definition');
     }
     const statuses = instance === 'default' ? params.defaultStatuses : params.pinned?.[instance]?.statuses ?? [];
     const index = reads.get(instance) ?? 0;
     reads.set(instance, index + 1);
-    return statuses[Math.min(index, statuses.length - 1)];
+    return { status: 0, stdout: JSON.stringify(statuses[Math.min(index, statuses.length - 1)]), stderr: '' };
   });
 }
 
 function commandLog(): string[] {
-  return runLocalHappierJsonCommandMock.mock.calls
-    .map(([call]) => `${(call as CliCall).args.join(' ')}@${(call as CliCall).processEnv?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID ?? 'default'}`)
+  return runCommandCaptureMock.mock.calls
+    .map(([call]) => `${(call as CliCall).args.join(' ')}@${(call as CliCall).env?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID ?? 'default'}`)
     .filter((entry) => !entry.startsWith('daemon service list'));
 }
 
-async function run(params: unknown) {
+async function run(params: Readonly<{ channel: 'stable' | 'preview' }>) {
   const events: unknown[] = [];
-  const iterator = createCliUpdateHandler()(params, { signal: new AbortController().signal, emit: (event) => { events.push(event); } });
-  for (;;) {
-    const next = await iterator.next();
-    if (next.done) return { result: next.value, events };
-  }
+  const restart = await planLocalHappierCliUpdateRestart({ current: CURRENT_CLI, releaseRing: params.channel, emit: (event) => { events.push(event); } });
+  await restart?.({ expectedVersion: '0.2.14', phase: 'activated' });
+  return { result: { restarted: restart !== null }, events };
 }
 
-describe('cli.update.v1', () => {
+describe('CLI update service restart owner', () => {
   const originalEnv = { ...process.env };
   afterEach(() => {
     vi.clearAllMocks();
-    runLocalHappierJsonCommandMock.mockReset();
+    runCommandCaptureMock.mockReset();
     process.env = { ...originalEnv };
   });
 
   it('restarts a running service daemon through the service\'s own relay selection and proves the new version', async () => {
     // A stack-pinned launch: the restart and its proof must not follow the pinned profile.
     process.env.HAPPIER_ACTIVE_SERVER_ID = 'stack-pinned';
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({ defaultStatuses: [
       statusJson({ running: true, serviceManaged: true, version: '0.2.13' }),
       statusJson({ running: true, serviceManaged: true, version: '0.2.14' }),
@@ -133,31 +118,28 @@ describe('cli.update.v1', () => {
 
     const { result } = await run({ channel: 'preview' });
 
-    expect(updateManagedLocalHappierCliMock).toHaveBeenCalledWith(expect.objectContaining({ releaseRing: 'preview' }));
     expect(commandLog()).toEqual([
       'daemon status --json@default',
       'daemon service restart --json@default',
       'daemon status --json@default',
     ]);
-    for (const [call] of runLocalHappierJsonCommandMock.mock.calls) {
-      expect(call.cli.command).toBe(CURRENT_CLI.command);
-      expect(call.processEnv.HAPPIER_ACTIVE_SERVER_ID).toBeUndefined();
+    for (const [call] of runCommandCaptureMock.mock.calls) {
+      expect(call.command).toBe(CURRENT_CLI.command);
+      expect(call.env.HAPPIER_ACTIVE_SERVER_ID).toBeUndefined();
     }
-    expect(result).toEqual({ previousVersion: '0.2.13', version: '0.2.14', restarted: true });
+    expect(result).toEqual({ restarted: true });
   });
 
   it('does not start a daemon that was not running, nor restart a manual one', async () => {
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({ defaultStatuses: [statusJson({ running: false, serviceManaged: false })] });
-    expect((await run({ channel: 'stable' })).result).toEqual({ previousVersion: '0.2.13', version: '0.2.14', restarted: false });
+    expect((await run({ channel: 'stable' })).result).toEqual({ restarted: false });
 
     answerCli({ defaultStatuses: [statusJson({ running: true, serviceManaged: false, version: '0.2.13' })] });
     expect((await run({ channel: 'stable' })).result).toMatchObject({ restarted: false });
-    expect(runLocalHappierJsonCommandMock.mock.calls.some((call) => call[0].args.includes('restart'))).toBe(false);
+    expect(runCommandCaptureMock.mock.calls.some((call) => call[0].args.includes('restart'))).toBe(false);
   });
 
   it('fails the restart proof when the restarted daemon still runs the previous version', async () => {
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({ defaultStatuses: [statusJson({ running: true, serviceManaged: true, version: '0.2.13' })] });
 
     await expect(run({ channel: 'stable' })).rejects.toThrow(/runs 0\.2\.13 instead of 0\.2\.14/);
@@ -172,7 +154,6 @@ describe('cli.update.v1', () => {
     const home = mkdtempSync(join(tmpdir(), 'hsetup-cli-update-pinned-'));
     process.env.HAPPIER_HOME_DIR = home;
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({
       defaultStatuses: [
         statusJson({ running: true, serviceManaged: true, version: '0.2.13' }),
@@ -195,18 +176,17 @@ describe('cli.update.v1', () => {
       'daemon service restart --json@relay-b',
     ]));
     expect(commandLog()).not.toContain('daemon service restart --json@relay-c');
-    const restartB = runLocalHappierJsonCommandMock.mock.calls
+    const restartB = runCommandCaptureMock.mock.calls
       .map(([call]) => call as CliCall)
-      .find((call) => call.args.join(' ') === 'daemon service restart --json' && call.processEnv?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID === 'relay-b');
-    expect(restartB?.processEnv).toMatchObject({ HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned', HAPPIER_SERVER_URL: 'https://relay-b.example.test' });
-    expect(result).toEqual({ previousVersion: '0.2.13', version: '0.2.14', restarted: true });
+      .find((call) => call.args.join(' ') === 'daemon service restart --json' && call.env?.HAPPIER_DAEMON_SERVICE_INSTANCE_ID === 'relay-b');
+    expect(restartB?.env).toMatchObject({ HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned', HAPPIER_SERVER_URL: 'https://relay-b.example.test' });
+    expect(result).toEqual({ restarted: true });
   });
 
   it('fails the proof when a pinned service daemon did not come back on the new version', async () => {
     const home = mkdtempSync(join(tmpdir(), 'hsetup-cli-update-pinned-stale-'));
     process.env.HAPPIER_HOME_DIR = home;
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({
       defaultStatuses: [statusJson({ running: false, serviceManaged: false })],
       pinned: { 'relay-b': { relayUrl: 'https://relay-b.example.test', managedBy: 'desktop', statuses: [statusJson({ running: true, serviceManaged: true, version: '0.2.13' })] } },
@@ -219,7 +199,6 @@ describe('cli.update.v1', () => {
     const home = mkdtempSync(join(tmpdir(), 'hsetup-cli-update-user-owned-'));
     process.env.HAPPIER_HOME_DIR = home;
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({
       defaultStatuses: [
         statusJson({ running: true, serviceManaged: true, version: '0.2.13' }),
@@ -231,7 +210,7 @@ describe('cli.update.v1', () => {
 
     const { result, events } = await run({ channel: 'stable' });
 
-    expect(result).toEqual({ previousVersion: '0.2.13', version: '0.2.14', restarted: true });
+    expect(result).toEqual({ restarted: true });
     expect(commandLog()).toContain('daemon service restart --json@relay-b');
     expect(events).toContainEqual(expect.objectContaining({
       type: 'progress',
@@ -245,7 +224,6 @@ describe('cli.update.v1', () => {
     const home = mkdtempSync(join(tmpdir(), 'hsetup-cli-update-attempt-all-'));
     process.env.HAPPIER_HOME_DIR = home;
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({
       // The default-following daemon does not come back on the new version…
       defaultStatuses: [statusJson({ running: true, serviceManaged: true, version: '0.2.13' })],
@@ -265,7 +243,6 @@ describe('cli.update.v1', () => {
     const home = mkdtempSync(join(tmpdir(), 'hsetup-cli-update-pinned-unreadable-'));
     process.env.HAPPIER_HOME_DIR = home;
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    updateManagedLocalHappierCliMock.mockImplementation(transactionStandIn('0.2.14'));
     answerCli({
       defaultStatuses: [statusJson({ running: false, serviceManaged: false })],
       pinned: { 'relay-b': { relayUrl: 'https://relay-b.example.test', statuses: [], unreadable: true } },
@@ -277,7 +254,8 @@ describe('cli.update.v1', () => {
   });
 
   it('rejects an unknown channel without updating anything', async () => {
-    await expect(run({ channel: 'nightly' })).rejects.toMatchObject({ code: 'invalid_params' });
-    expect(updateManagedLocalHappierCliMock).not.toHaveBeenCalled();
+    const iterator = createCliUpdateHandler()({ channel: 'nightly' }, { signal: new AbortController().signal });
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(runCommandCaptureMock).not.toHaveBeenCalled();
   });
 });

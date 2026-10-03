@@ -811,7 +811,7 @@ describe('discoverInstalledDaemonServiceEntries', () => {
     });
   });
 
-  it('does not fabricate a local wrapper path when Windows task wrapper path cannot be resolved', async () => {
+  it('names an unreadable Windows task instead of claiming an empty inventory', async () => {
     await withTempDir('happier-discover-service-entry-windows-unresolved-task-', async (homeDir) => {
       const happierHomeDir = join(homeDir, '.happier');
       mkdirSync(join(happierHomeDir, 'services'), { recursive: true });
@@ -845,15 +845,41 @@ describe('discoverInstalledDaemonServiceEntries', () => {
         return { status: 1, stdout: '', stderr: 'unexpected schtasks call' } as never;
       });
 
-      const entries = await discoverInstalledDaemonServiceEntries({
+      await expect(discoverInstalledDaemonServiceEntries({
         platform: 'win32',
         userHomeDir: homeDir,
         happierHomeDir,
         mode: 'user',
         serversById: {},
-      });
+      })).rejects.toMatchObject({ code: 'service_inventory_unavailable', message: expect.stringContaining('happier-daemon.default') });
+    });
+  });
 
-      expect(entries).toEqual([]);
+  it('enumerates Scheduler without a local wrapper directory and retains foreign tasks', async () => {
+    await withTempDir('happier-discover-task-no-directory-', async (homeDir) => {
+      const wrapper = String.raw`C:\Other\.happier\services\happier-daemon.company.ps1`;
+      spawnSyncMock.mockImplementation((_command, args) => ({ status: 0, stdout: args?.includes('/XML') ? `<Task><Actions><Exec><Arguments>-File "${wrapper}"</Arguments></Exec></Actions></Task>` : '"\\Happier\\happier-daemon.company","N/A"\r\n', stderr: '' } as never));
+      const entries = await discoverInstalledDaemonServiceEntries({ platform: 'win32', userHomeDir: homeDir, happierHomeDir: join(homeDir, '.happier'), mode: 'user', serversById: {} });
+      expect(entries).toEqual([expect.objectContaining({ serverId: 'company', path: wrapper })]);
+    });
+  });
+
+  it('names the task when the OS process boundary throws during inspection', async () => {
+    readdirSyncMock.mockReturnValue([]);
+    spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: '"\\Happier\\happier-daemon.company","N/A"\r\n', stderr: '' } as never)
+      .mockImplementationOnce(() => { throw new Error('OS process unavailable'); });
+    await expect(discoverInstalledDaemonServiceEntries({ platform: 'win32', userHomeDir: '/unused', happierHomeDir: '/unused/.happier', mode: 'user', serversById: {} }))
+      .rejects.toMatchObject({ code: 'service_inventory_unavailable', message: expect.stringContaining('happier-daemon.company') });
+  });
+
+  it('omits a task only after a successful Scheduler enumeration proves it disappeared', async () => {
+    await withTempDir('happier-discover-task-disappeared-', async (homeDir) => {
+      mkdirSync(join(homeDir, '.happier', 'services'), { recursive: true });
+      spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: '"\\Happier\\happier-daemon.company","N/A"\r\n', stderr: '' } as never)
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'not found' } as never)
+        .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'not found' } as never)
+        .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' } as never);
+      await expect(discoverInstalledDaemonServiceEntries({ platform: 'win32', userHomeDir: homeDir, happierHomeDir: join(homeDir, '.happier'), mode: 'user', serversById: {} })).resolves.toEqual([]);
     });
   });
 

@@ -1,10 +1,10 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createSetupCliScope, installService, markInstallDesktopManaged, previewServiceInstall, registerRelayProfile, setDaemonServiceAutostart } from './localDaemonCli.js';
+import { createSetupCliScope, installService, markInstallDesktopManaged, previewServiceInstall, readPinnedDaemonServices, readPinnedServiceInventory, registerRelayProfile, setDaemonServiceAutostart } from './localDaemonCli.js';
 
 describe('previewServiceInstall', () => {
   /**
@@ -20,7 +20,7 @@ describe('previewServiceInstall', () => {
         cliPath,
         [
           '#!/bin/sh',
-          'printf \'{"ok":true,"plan":{},"takeover":"%s|%s|%s|%s"}\\n\' "$HAPPIER_SERVER_URL" "$HAPPIER_WEBAPP_URL" "$HAPPIER_LOCAL_SERVER_URL" "$HAPPIER_PUBLIC_SERVER_URL"',
+          'printf \'{"ok":true,"plan":{},"takeover":"%s|%s|%s|%s|%s|%s|%s"}\\n\' "$HAPPIER_SERVER_URL" "$HAPPIER_WEBAPP_URL" "$HAPPIER_LOCAL_SERVER_URL" "$HAPPIER_PUBLIC_SERVER_URL" "$HAPPIER_PUBLIC_RELEASE_CHANNEL" "$HAPPIER_RELEASE_RING" "$HAPPIER_RELEASE_CHANNEL"',
           '',
         ].join('\n'),
         'utf8',
@@ -30,11 +30,11 @@ describe('previewServiceInstall', () => {
       const scope = createSetupCliScope({
         cli: { command: cliPath, provenance: 'managed', version: '0.2.13' },
         target: { serverUrl: 'https://relay-a.example.test', webappUrl: 'https://app-a.example.test', localServerUrl: null },
-        processEnv: { ...process.env, HAPPIER_PUBLIC_SERVER_URL: 'https://inherited.example.test', HAPPIER_LOCAL_SERVER_URL: 'http://127.0.0.1:9' },
+        processEnv: { ...process.env, HAPPIER_HOME_DIR: rootDir, HAPPIER_PUBLIC_SERVER_URL: 'https://inherited.example.test', HAPPIER_LOCAL_SERVER_URL: 'http://127.0.0.1:9', HAPPIER_PUBLIC_RELEASE_CHANNEL: 'publicdev', HAPPIER_RELEASE_RING: 'preview', HAPPIER_RELEASE_CHANNEL: 'publicdev' },
       });
       const preview = await previewServiceInstall('stable', scope.target);
 
-      expect(preview.takeover).toBe('https://relay-a.example.test|https://app-a.example.test||');
+      expect(preview.takeover).toBe('https://relay-a.example.test|https://app-a.example.test|||stable||');
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
@@ -46,7 +46,12 @@ describe('createSetupCliScope', () => {
   const target = { serverUrl: 'https://relay-b.example.test', webappUrl: 'https://app-b.example.test', localServerUrl: null };
   // A stack launch exports a service target of its own.
   // An inherited marker could otherwise stamp a service the app never meant to manage.
-  const inherited = { PATH: '/bin', HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned', HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'stack', HAPPIER_ACTIVE_SERVER_ID: 'stack', HAPPIER_DAEMON_SERVICE_MANAGED_BY: 'desktop', HAPPIER_DAEMON_SERVICE_BUNDLE_ID: 'dev.happier.app' };
+  const inherited = {
+    HAPPIER_PUBLIC_RELEASE_CHANNEL: 'publicdev', HAPPIER_RELEASE_RING: 'preview', HAPPIER_RELEASE_CHANNEL: 'publicdev',
+    PATH: '/bin', HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned', HAPPIER_DAEMON_SERVICE_INSTANCE_ID: 'stack', HAPPIER_ACTIVE_SERVER_ID: 'stack', HAPPIER_DAEMON_SERVICE_MANAGED_BY: 'desktop', HAPPIER_DAEMON_SERVICE_BUNDLE_ID: 'dev.happier.app',
+    HAPPIER_DAEMON_SERVICE_SERVER_URL: 'https://inherited.example.test', HAPPIER_DAEMON_SERVICE_WEBAPP_URL: 'https://inherited-app.example.test', HAPPIER_DAEMON_SERVICE_PUBLIC_SERVER_URL: 'https://inherited-public.example.test', HAPPIER_DAEMON_SERVICE_CHANNEL: 'publicdev',
+    HAPPIER_DAEMON_SERVICE_NODE_PATH: '/other/node', HAPPIER_DAEMON_SERVICE_ENTRY_PATH: '/other/entry', HAPPIER_DAEMON_SERVICE_PLATFORM: 'win32', HAPPIER_DAEMON_SERVICE_UID: '999', HAPPIER_DAEMON_SERVICE_USER_HOME_DIR: '/other', HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR: '/other/.happier', HAPPIER_DAEMON_SERVICE_MODE: 'system', HAPPIER_DAEMON_SERVICE_SYSTEM_USER: 'other',
+  };
 
   it('addresses this home\'s persisted selection and its default-following service unless told otherwise', () => {
     const scope = createSetupCliScope({ cli, target, processEnv: inherited });
@@ -61,6 +66,32 @@ describe('createSetupCliScope', () => {
     const expected = { PATH: '/bin', HAPPIER_SERVER_URL: target.serverUrl, HAPPIER_WEBAPP_URL: target.webappUrl, HAPPIER_DAEMON_SERVICE_TARGET_MODE: 'pinned' };
     expect(scope.target.processEnv).toEqual(expected);
     expect(scope.selected.processEnv).toEqual(expected);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('kept CLI inventory adopts the effective home ring', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('retains stable desktop pins for a preview app in both inventory and status reads', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'hsetup-kept-ring-'));
+    try {
+      const home = join(root, 'home');
+      mkdirSync(home);
+      const command = join(root, 'happier');
+      writeFileSync(join(home, 'cli-choice.json'), JSON.stringify({ mode: 'own', command }));
+      writeFileSync(join(home, 'default-cli-release-channel.json'), JSON.stringify({ releaseChannel: 'stable' }));
+      const relayUrl = 'https://relay-b.example.test';
+      const entry = { targetMode: 'pinned', releaseChannel: 'stable', serverId: 'relay-b', activeServerId: 'relay-b', relayUrl, happierHomeDir: home, managedBy: 'desktop' };
+      // The external CLI process is the boundary; ring resolution and both inventory readers stay real.
+      writeFileSync(command, `#!${process.execPath}\nconst listing = process.argv.includes('list');\nconsole.log(JSON.stringify(listing ? ${JSON.stringify({ entries: [entry], capabilities: { pinnedServiceCoexistence: true } })} : { server: { activeServerId: 'relay-b', serverUrl: '${relayUrl}', publicServerUrl: '${relayUrl}', localServerUrl: null, webappUrl: '${relayUrl}', comparableKey: 'relay-b.example.test' }, daemon: { running: false, pid: null, httpPort: null }, service: { installed: true, running: false, targetMode: 'pinned' }, auth: { authenticated: false, machineRegistered: false, machineId: null, needsAuth: true, accountId: null } }));\n`);
+      chmodSync(command, 0o755);
+      vi.stubEnv('HAPPIER_HOME_DIR', home);
+      const cli = { command, provenance: 'override' as const, version: '0.2.13', processEnv: { ...process.env, HAPPIER_HOME_DIR: home } };
+      expect(await readPinnedServiceInventory('preview', cli)).toEqual({ listed: true, coexistence: true, relayUrls: [relayUrl] });
+      expect(await readPinnedDaemonServices('preview', cli)).toMatchObject({ listed: true, complete: true, items: [{ service: { relayUrl, managedBy: 'desktop' }, status: { serviceInstalled: true }, error: null }] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
