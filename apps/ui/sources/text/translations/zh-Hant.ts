@@ -1843,6 +1843,10 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
           // Simple string constants
           cancel: '取消',
           close: '關閉',
+          minimizeWindow: "最小化視窗",
+          maximizeWindow: "最大化視窗",
+          restoreWindow: "還原視窗",
+          closeWindow: "關閉視窗",
           open: '開啟',
           done: '完成',
           reorder: '重新排序',
