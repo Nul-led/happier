@@ -136,12 +136,26 @@ describe('ActivitySpinner (native)', () => {
         expect(firstDot.backgroundColor).toBe('theme-secondary-text');
         expect(firstDot.width).toBe(3);
 
-        const frames = getDotSpinnerFrames('wave');
+        const frames = getDotSpinnerFrames('wave', { speed: 'normal', pause: 'short' });
         const series = readDotSeries(frames.opacity, 0, frames.frameCount);
         const opacity = firstDot.opacity as InterpolationStub;
         expect(opacity.config.outputRange).toEqual([...series, series[0]]);
         expect(opacity.config.inputRange[0]).toBe(0);
         expect(opacity.config.inputRange.at(-1)).toBe(1);
+    });
+
+    it('runs each speed and pause on the shared clock for its own played cycle', async () => {
+        localSettingValues.loadingIndicatorSpeed = 'fast';
+        localSettingValues.loadingIndicatorPause = 'long';
+        const { ActivitySpinner } = await import('./ActivitySpinner');
+        const fast = await renderScreen(<><ActivitySpinner size={18} /><ActivitySpinner size={12} /></>);
+        mountedScreens.push(fast);
+        expect(await runningNativeLoops()).toBe(1);
+
+        localSettingValues.loadingIndicatorSpeed = 'slow';
+        const slow = await renderScreen(<ActivitySpinner size={18} />);
+        mountedScreens.push(slow);
+        expect(await runningNativeLoops()).toBe(2);
     });
 
     it('drives every spinner of a style from one shared native loop and stops it when the last one leaves', async () => {
@@ -244,7 +258,7 @@ describe('ActivitySpinner (native)', () => {
     it('breathes the still H from one shared loop under reduced motion', async () => {
         const { DotSpinnerNative } = await import('./activitySpinner/DotSpinnerNative');
         const screen = await renderScreen(
-            <DotSpinnerNative styleId="wave" size={18} ink={{ color: 'ink' }} motion="breathe" hidden={false} viewProps={{ testID: 'spinner' }} />,
+            <DotSpinnerNative styleId="wave" timing={{ speed: 'normal', pause: 'short' }} size={18} ink={{ color: 'ink' }} motion="breathe" hidden={false} viewProps={{ testID: 'spinner' }} />,
         );
         mountedScreens.push(screen);
 

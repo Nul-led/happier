@@ -4420,6 +4420,22 @@ export const ru: TranslationStructure = {
       aurora: "Сияние",
       classicRing: "Классическое кольцо",
     },
+    loadingIndicatorSpeed: "Скорость",
+    loadingIndicatorSpeedDescription: "Как быстро свет проходит по точкам",
+    loadingIndicatorSpeedOptions: {
+      slow: "Медленно",
+      normal: "Обычно",
+      fast: "Быстро",
+    },
+    loadingIndicatorPause: "Пауза",
+    loadingIndicatorPauseDescription: "Сколько точки отдыхают перед каждым циклом",
+    loadingIndicatorPauseOptions: {
+      none: "Нет",
+      short: "Короткая",
+      long: "Длинная",
+    },
+    loadingIndicatorPauseUnavailable: "Этот стиль повторяется без паузы.",
+    loadingIndicatorSpeedUnavailable: "Классическое кольцо вращается в собственном постоянном темпе.",
     avatarStyle: "Стиль аватара",
     avatarStyleDescription: "Выберите внешний вид аватара сессии",
     avatarOptions: {

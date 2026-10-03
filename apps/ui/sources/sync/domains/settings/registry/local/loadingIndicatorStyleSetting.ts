@@ -41,3 +41,23 @@ export function normalizeLoadingIndicatorStyleId(value: unknown): LoadingIndicat
  * rather than wipe the user's other preferences.
  */
 export const LoadingIndicatorStyleIdSchema = z.enum(LOADING_INDICATOR_STYLE_IDS).catch(DEFAULT_LOADING_INDICATOR_STYLE_ID);
+
+/** How fast dot loading indicators play: a playback rate on each style's motion. */
+export const LOADING_INDICATOR_SPEED_IDS = ['slow', 'normal', 'fast'] as const;
+export type LoadingIndicatorSpeedId = (typeof LOADING_INDICATOR_SPEED_IDS)[number];
+export const DEFAULT_LOADING_INDICATOR_SPEED_ID = 'normal' satisfies LoadingIndicatorSpeedId;
+export const LoadingIndicatorSpeedIdSchema = z.enum(LOADING_INDICATOR_SPEED_IDS).catch(DEFAULT_LOADING_INDICATOR_SPEED_ID);
+
+/** How long dot loading indicators rest between loops. Styles that loop continuously ignore it. */
+export const LOADING_INDICATOR_PAUSE_IDS = ['none', 'short', 'long'] as const;
+export type LoadingIndicatorPauseId = (typeof LOADING_INDICATOR_PAUSE_IDS)[number];
+export const DEFAULT_LOADING_INDICATOR_PAUSE_ID = 'short' satisfies LoadingIndicatorPauseId;
+export const LoadingIndicatorPauseIdSchema = z.enum(LOADING_INDICATOR_PAUSE_IDS).catch(DEFAULT_LOADING_INDICATOR_PAUSE_ID);
+
+/** Unknown stored values (a newer build's choice, or garbage) play at the defaults. */
+export function normalizeLoadingIndicatorTiming(speed: unknown, pause: unknown): Readonly<{
+    speed: LoadingIndicatorSpeedId;
+    pause: LoadingIndicatorPauseId;
+}> {
+    return { speed: LoadingIndicatorSpeedIdSchema.parse(speed), pause: LoadingIndicatorPauseIdSchema.parse(pause) };
+}

@@ -4341,6 +4341,22 @@ export const zhHans: TranslationStructure = {
       aurora: "极光",
       classicRing: "经典圆环",
     },
+    loadingIndicatorSpeed: "速度",
+    loadingIndicatorSpeedDescription: "光点在圆点间移动的快慢",
+    loadingIndicatorSpeedOptions: {
+      slow: "慢",
+      normal: "正常",
+      fast: "快",
+    },
+    loadingIndicatorPause: "停顿",
+    loadingIndicatorPauseDescription: "每轮循环前圆点停歇的时长",
+    loadingIndicatorPauseOptions: {
+      none: "无",
+      short: "短",
+      long: "长",
+    },
+    loadingIndicatorPauseUnavailable: "此样式连续循环，不会停顿。",
+    loadingIndicatorSpeedUnavailable: "经典圆环以固定的节奏转动。",
     avatarStyle: "头像风格",
     avatarStyleDescription: "选择会话头像外观",
     avatarOptions: {

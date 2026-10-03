@@ -141,6 +141,9 @@ const ALLOW_SAME_STRING_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<stri
     'settingsAppearance.loadingIndicatorOptions.radar': new Set(['pl', 'es', 'fr', 'it', 'pt', 'ca', 'de']),
     'settingsAppearance.loadingIndicatorOptions.aurora': new Set(['es', 'it', 'pt', 'ca']),
     'settingsAppearance.loadingIndicatorStyle': new Set(['fr']),
+    // "Normal" and "Pause" are the same words in these locales.
+    'settingsAppearance.loadingIndicatorSpeedOptions.normal': new Set(['de', 'es', 'pt', 'ca']),
+    'settingsAppearance.loadingIndicatorPause': new Set(['de', 'fr']),
 };
 
 function isProviderPluginTitleKey(key: string): boolean {

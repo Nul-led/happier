@@ -4498,6 +4498,22 @@ export const pl: TranslationStructure = {
       aurora: "Zorza",
       classicRing: "Klasyczny pierścień",
     },
+    loadingIndicatorSpeed: "Szybkość",
+    loadingIndicatorSpeedDescription: "Jak szybko światło przechodzi przez kropki",
+    loadingIndicatorSpeedOptions: {
+      slow: "Wolno",
+      normal: "Normalnie",
+      fast: "Szybko",
+    },
+    loadingIndicatorPause: "Pauza",
+    loadingIndicatorPauseDescription: "Jak długo kropki odpoczywają przed każdą pętlą",
+    loadingIndicatorPauseOptions: {
+      none: "Brak",
+      short: "Krótka",
+      long: "Długa",
+    },
+    loadingIndicatorPauseUnavailable: "Ten styl zapętla się bez przerwy.",
+    loadingIndicatorSpeedUnavailable: "Klasyczny pierścień obraca się we własnym, stałym tempie.",
     avatarStyle: "Styl awatara",
     avatarStyleDescription: "Wybierz wygląd awatara sesji",
     avatarOptions: {

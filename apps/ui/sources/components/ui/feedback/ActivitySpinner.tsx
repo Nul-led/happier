@@ -12,6 +12,7 @@ import { useIsHostVisible } from '@/hooks/ui/useIsHostVisible';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import {
     normalizeLoadingIndicatorStyleId,
+    normalizeLoadingIndicatorTiming,
     type LoadingIndicatorStyleId,
 } from '@/sync/domains/settings/registry/local/loadingIndicatorStyleSetting';
 import { useLocalSetting } from '@/sync/store/hooks';
@@ -90,7 +91,8 @@ export function iconMatchedSpinnerSize(iconSize: number): number {
 
 /**
  * Every loading spinner in the app. Draws the style chosen in Settings → Appearance: one of the dot
- * styles (the H of Happier with light moving through it) or the classic ring.
+ * styles (the H of Happier with light moving through it) or the classic ring, at the speed and pause
+ * between loops chosen there.
  */
 export function ActivitySpinner(props: ActivitySpinnerProps) {
     // Native hidden spinners retain their layout host; that placeholder must not announce work.
@@ -105,6 +107,8 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
     };
     const { theme } = useUnistyles();
     const storedStyle = useLocalSetting('loadingIndicatorStyle');
+    const storedSpeed = useLocalSetting('loadingIndicatorSpeed');
+    const storedPause = useLocalSetting('loadingIndicatorPause');
     const reduceMotion = useReducedMotionPreference();
     // A window nobody can see (a hidden tab, a backgrounded app) gets a still spinner: every
     // animation loop declares its stop condition (`apps/ui/AGENTS.md`).
@@ -119,6 +123,9 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
         ...viewProps
     } = normalizedProps;
     const styleId = variant ?? normalizeLoadingIndicatorStyleId(storedStyle);
+    // Previews (`variant`) play at the chosen speed and pause too, so they show the real spinner.
+    const { speed, pause } = normalizeLoadingIndicatorTiming(storedSpeed, storedPause);
+    const timing = React.useMemo(() => ({ speed, pause }), [pause, speed]);
     const resolvedColor = color ?? theme.colors.text.secondary;
     const inkColor = typeof resolvedColor === 'string' ? resolvedColor : theme.colors.text.secondary;
     const { indigo, purple, orange } = theme.colors.accent;
@@ -143,6 +150,7 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
         return (
             <DotSpinnerNative
                 styleId={styleId}
+                timing={timing}
                 size={resolvedSize}
                 ink={ink}
                 motion={motion}
@@ -152,7 +160,7 @@ export function ActivitySpinner(props: ActivitySpinnerProps) {
         );
     }
     if (hidden) return null;
-    return <DotSpinnerWeb styleId={styleId} size={resolvedSize} ink={ink} motion={motion} viewProps={accessibleViewProps} />;
+    return <DotSpinnerWeb styleId={styleId} timing={timing} size={resolvedSize} ink={ink} motion={motion} viewProps={accessibleViewProps} />;
 }
 
 function ClassicRingSpinner(props: ActivitySpinnerProps & { reduceMotion: boolean; hostVisible: boolean }) {

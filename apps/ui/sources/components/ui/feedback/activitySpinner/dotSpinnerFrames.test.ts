@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { LOADING_INDICATOR_STYLE_IDS } from '@/sync/domains/settings/registry/local/loadingIndicatorStyleSetting';
+import {
+    LOADING_INDICATOR_PAUSE_IDS,
+    LOADING_INDICATOR_SPEED_IDS,
+    LOADING_INDICATOR_STYLE_IDS,
+    normalizeLoadingIndicatorTiming,
+} from '@/sync/domains/settings/registry/local/loadingIndicatorStyleSetting';
 import {
     buildDotSpinnerFilmstripSvg,
     buildDotSpinnerStillSvg,
@@ -9,12 +14,21 @@ import {
     resolveAuroraBlend,
     unwrapHueSeries,
 } from './dotSpinnerFrames';
-import { DOT_SPINNER_STYLES, H_DOTS, type DotSpinnerStyleId } from './dotSpinnerStyles';
+import {
+    DOT_REST_OPACITY,
+    DOT_SPINNER_STYLES,
+    H_DOTS,
+    loadingIndicatorTimingControls,
+    type DotSpinnerStyleId,
+    type DotSpinnerTiming,
+} from './dotSpinnerStyles';
 
 const DOT_STYLE_IDS = LOADING_INDICATOR_STYLE_IDS.filter((id): id is DotSpinnerStyleId => id !== 'classicRing');
+const DEFAULT: DotSpinnerTiming = { speed: 'normal', pause: 'short' };
+const FRAME_MS = 1000 / DOT_SPINNER_FRAMES_PER_SECOND;
 
-function dotSeries(styleId: DotSpinnerStyleId, dotId: string): number[] {
-    const frames = getDotSpinnerFrames(styleId);
+function dotSeries(styleId: DotSpinnerStyleId, dotId: string, timing: DotSpinnerTiming = DEFAULT): number[] {
+    const frames = getDotSpinnerFrames(styleId, timing);
     const index = H_DOTS.findIndex((dot) => dot.id === dotId);
     return Array.from({ length: frames.frameCount }, (_, frame) => frames.opacity[frame * H_DOTS.length + index]!);
 }
@@ -26,15 +40,20 @@ describe('dot spinner frames', () => {
 
     it.each(DOT_STYLE_IDS)('%s plays at the shared frame rate, loops without a seam, and visibly moves', (styleId) => {
         const style = DOT_SPINNER_STYLES[styleId];
-        const frames = getDotSpinnerFrames(styleId);
+        const frames = getDotSpinnerFrames(styleId, DEFAULT);
 
-        expect(frames.frameCount).toBe(Math.round((style.cycleMs * DOT_SPINNER_FRAMES_PER_SECOND) / 1000));
+        expect(frames.frameCount).toBe(Math.round((frames.cycleMs * DOT_SPINNER_FRAMES_PER_SECOND) / 1000));
         expect(frames.opacity).toHaveLength(frames.frameCount * H_DOTS.length);
         expect(frames.opacity.every((value) => value >= 0 && value <= 1)).toBe(true);
 
         for (const dot of H_DOTS) {
-            expect(style.opacity(dot, style.cycleMs)).toBeCloseTo(style.opacity(dot, 0), 5);
-            if (style.hue) expect(style.hue(dot, style.cycleMs) % 1).toBeCloseTo(style.hue(dot, 0) % 1, 5);
+            if (style.loop === 'continuous') {
+                expect(style.opacity(dot, style.motionMs)).toBeCloseTo(style.opacity(dot, 0), 5);
+                if (style.hue) expect(style.hue(dot, style.motionMs) % 1).toBeCloseTo(style.hue(dot, 0) % 1, 5);
+            } else {
+                // A resting style's motion ends with every dot back at rest, so the pause joins it seamlessly.
+                expect(style.opacity(dot, style.motionMs)).toBeCloseTo(DOT_REST_OPACITY, 2);
+            }
         }
 
         const signal = frames.hue ?? frames.opacity;
@@ -43,6 +62,61 @@ describe('dot spinner frames', () => {
             return Math.max(...series) - Math.min(...series);
         }));
         expect(swing).toBeGreaterThan(0.5);
+    });
+
+    it('plays the wave as its motion (first dot lit to last dot at rest) then the chosen pause', () => {
+        // 4 diagonal steps of 110 ms plus a 364 ms lit envelope: 804 ms of motion.
+        expect(getDotSpinnerFrames('wave', { speed: 'normal', pause: 'none' }).cycleMs).toBe(804);
+        expect(getDotSpinnerFrames('wave', { speed: 'normal', pause: 'short' }).cycleMs).toBe(1004);
+        expect(getDotSpinnerFrames('wave', { speed: 'normal', pause: 'long' }).cycleMs).toBe(1304);
+
+        const frames = getDotSpinnerFrames('wave', { speed: 'normal', pause: 'short' });
+        // Apart from the motion's first frame (the foot about to light), the pause is the only rest.
+        const restingFrames = Array.from({ length: frames.frameCount }, (_, frame) => frames.opacity
+            .slice(frame * H_DOTS.length, (frame + 1) * H_DOTS.length)
+            .every((value) => value <= DOT_REST_OPACITY)).filter(Boolean).length;
+        expect(restingFrames * FRAME_MS).toBeGreaterThanOrEqual(190);
+        expect(restingFrames * FRAME_MS).toBeLessThanOrEqual(240);
+    });
+
+    it('scales the motion by the speed and keeps the pause in absolute ms', () => {
+        expect(getDotSpinnerFrames('wave', { speed: 'fast', pause: 'short' }).cycleMs).toBe(Math.round(804 / 1.5 + 200));
+        expect(getDotSpinnerFrames('wave', { speed: 'slow', pause: 'short' }).cycleMs).toBe(Math.round(804 / 0.75 + 200));
+        expect(getDotSpinnerFrames('wave', { speed: 'fast', pause: 'long' }).cycleMs).toBe(Math.round(804 / 1.5 + 500));
+
+        const litMs = (timing: DotSpinnerTiming) => dotSeries('wave', 'BL', timing).filter((value) => value > DOT_REST_OPACITY).length * FRAME_MS;
+        expect(litMs({ speed: 'normal', pause: 'short' })).toBeCloseTo(364, -2);
+        expect(litMs({ speed: 'normal', pause: 'long' })).toBeCloseTo(litMs({ speed: 'normal', pause: 'none' }), -1);
+        expect(litMs({ speed: 'fast', pause: 'short' })).toBeCloseTo(364 / 1.5, -2);
+    });
+
+    it('loops continuous styles straight on: the speed applies, the pause does not', () => {
+        const radar = (timing: DotSpinnerTiming) => getDotSpinnerFrames('radar', timing);
+
+        expect(radar({ speed: 'normal', pause: 'none' }).cycleMs).toBe(1100);
+        expect(radar({ speed: 'normal', pause: 'long' })).toBe(radar({ speed: 'normal', pause: 'none' }));
+        expect(radar({ speed: 'fast', pause: 'short' }).cycleMs).toBe(733);
+        expect(loadingIndicatorTimingControls('radar')).toEqual({ speed: true, pause: false });
+        expect(loadingIndicatorTimingControls('wave')).toEqual({ speed: true, pause: true });
+        expect(loadingIndicatorTimingControls('classicRing')).toEqual({ speed: false, pause: false });
+    });
+
+    it('shares one table per distinct style and timing', () => {
+        const tables = new Set<unknown>();
+        for (const speed of LOADING_INDICATOR_SPEED_IDS) {
+            for (const pause of LOADING_INDICATOR_PAUSE_IDS) {
+                const frames = getDotSpinnerFrames('wave', { speed, pause });
+                expect(getDotSpinnerFrames('wave', { speed, pause })).toBe(frames);
+                tables.add(frames.key);
+            }
+        }
+        expect(tables.size).toBe(9);
+    });
+
+    it('plays unknown stored speeds and pauses at the defaults', () => {
+        expect(normalizeLoadingIndicatorTiming('fast', 'none')).toEqual({ speed: 'fast', pause: 'none' });
+        expect(normalizeLoadingIndicatorTiming('warp', 42)).toEqual({ speed: 'normal', pause: 'short' });
+        expect(normalizeLoadingIndicatorTiming(undefined, undefined)).toEqual(DEFAULT);
     });
 
     it('lights the wave from the bottom-left foot to the top-right corner', () => {
@@ -60,7 +134,7 @@ describe('dot spinner frames', () => {
     });
 
     it('draws every frame of a strip in the requested ink', () => {
-        const frames = getDotSpinnerFrames('wave');
+        const frames = getDotSpinnerFrames('wave', DEFAULT);
         const svg = buildDotSpinnerFilmstripSvg(frames, { color: '#123456' });
 
         expect(svg).toContain(`viewBox="0 0 ${frames.frameCount * 3} 3"`);
@@ -74,7 +148,7 @@ describe('dot spinner frames', () => {
         expect(resolveAuroraBlend(0.5)).toEqual({ from: 1, to: 2, mix: 0.5 });
         expect(resolveAuroraBlend(0.9)).toEqual({ from: 2, to: 0, mix: 0.7 });
 
-        const svg = buildDotSpinnerFilmstripSvg(getDotSpinnerFrames('aurora'), { aurora: ['#111111', 'rgb(1, 2, 3)', '"><x'] });
+        const svg = buildDotSpinnerFilmstripSvg(getDotSpinnerFrames('aurora', DEFAULT), { aurora: ['#111111', 'rgb(1, 2, 3)', '"><x'] });
         expect(svg).toContain('fill="#111111"');
         expect(svg).toContain('fill="rgb(1, 2, 3)"');
         expect(svg).not.toContain('"><x');
@@ -89,7 +163,7 @@ describe('unwrapHueSeries', () => {
     });
 
     it('keeps every aurora frame step under half a gradient lap', () => {
-        const frames = getDotSpinnerFrames('aurora');
+        const frames = getDotSpinnerFrames('aurora', DEFAULT);
         for (let dot = 0; dot < H_DOTS.length; dot++) {
             const series = unwrapHueSeries(Array.from({ length: frames.frameCount }, (_, frame) => frames.hue![frame * H_DOTS.length + dot]!));
             for (let i = 1; i < series.length; i++) expect(Math.abs(series[i]! - series[i - 1]!)).toBeLessThanOrEqual(0.5);

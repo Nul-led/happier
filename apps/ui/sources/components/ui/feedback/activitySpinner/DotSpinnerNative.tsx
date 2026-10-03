@@ -10,7 +10,7 @@ import {
     type DotSpinnerFrames,
     type DotSpinnerInk,
 } from './dotSpinnerFrames';
-import { H_DOTS, type DotSpinnerStyleId, type HDot } from './dotSpinnerStyles';
+import { H_DOTS, type DotSpinnerStyleId, type DotSpinnerTiming, type HDot } from './dotSpinnerStyles';
 import type { DotSpinnerMotion } from './dotSpinnerMotion';
 
 const BREATH_LOW_OPACITY = 0.45;
@@ -73,14 +73,15 @@ function driveDots(frames: DotSpinnerFrames, ink: DotSpinnerInk, clock: Animated
  */
 export function DotSpinnerNative(props: Readonly<{
     styleId: DotSpinnerStyleId;
+    timing: DotSpinnerTiming;
     size: number;
     ink: DotSpinnerInk;
     motion: DotSpinnerMotion;
     hidden: boolean;
     viewProps: ViewProps;
 }>) {
-    const { styleId, size, ink, motion, hidden, viewProps } = props;
-    const frames = getDotSpinnerFrames(styleId);
+    const { styleId, timing, size, ink, motion, hidden, viewProps } = props;
+    const frames = getDotSpinnerFrames(styleId, timing);
     const animate = motion === 'animate' && !hidden;
     const breathe = motion === 'breathe' && !hidden;
     const clock = useDotSpinnerCycleClock(frames.cycleMs, animate);
