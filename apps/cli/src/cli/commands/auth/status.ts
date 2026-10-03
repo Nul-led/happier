@@ -17,12 +17,13 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
   const relayHost = formatRelayHost(configuration.serverUrl);
 
   if (json && !credentials) {
-    await printJsonEnvelope({ ok: false, kind: 'auth_status', error: { code: 'not_authenticated' } });
+    await printJsonEnvelope({ ok: false, kind: 'auth_status', error: { code: 'not_authenticated', serverId: configuration.activeServerId } });
     return;
   }
 
   if (!json) {
     console.log(sectionTitle('Authentication'));
+    console.log(chalk.gray(`Server profile: ${configuration.activeServerId}`));
   }
 
   if (!credentials) {
@@ -33,7 +34,7 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
 
   if (readiness.unusableReason === 'credentials-rejected') {
     if (json) {
-      await printJsonEnvelope({ ok: false, kind: 'auth_status', error: { code: 'not_authenticated' } });
+      await printJsonEnvelope({ ok: false, kind: 'auth_status', error: { code: 'not_authenticated', serverId: configuration.activeServerId } });
       return;
     }
 
@@ -50,6 +51,7 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
         kind: 'auth_status',
         error: {
           code: 'auth_unavailable',
+          serverId: configuration.activeServerId,
           message: 'The selected relay did not answer; stored credentials were kept.',
           machineRegistered: readiness.machineRegistered,
           ...(readiness.machineRegistered && readiness.machineId ? { machineId: readiness.machineId } : {}),
@@ -79,6 +81,7 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
       kind: 'auth_status',
       data: {
         authenticated: true,
+        serverId: configuration.activeServerId,
         ...(validatedAccountId ? { accountId: validatedAccountId } : {}),
         accountLabel: validatedAccountLabel,
         relayHost,

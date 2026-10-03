@@ -41,12 +41,13 @@ describe('happier auth status --json', () => {
             v: number;
             ok: boolean;
             kind: string;
-            error?: { code?: string };
+            error?: { code?: string; serverId?: string };
           };
           expect(parsed.v).toBe(1);
           expect(parsed.ok).toBe(false);
           expect(parsed.kind).toBe('auth_status');
           expect(parsed.error?.code).toBe('not_authenticated');
+          expect(parsed.error?.serverId).toBe(configuration.activeServerId);
           expect(process.exitCode).toBe(1);
         } finally {
           output.restore();
@@ -170,12 +171,13 @@ describe('happier auth status --json', () => {
             v: number;
             ok: boolean;
             kind: string;
-            error?: { code?: string };
+            error?: { code?: string; serverId?: string };
           };
           expect(parsed.v).toBe(1);
           expect(parsed.ok).toBe(false);
           expect(parsed.kind).toBe('auth_status');
           expect(parsed.error?.code).toBe('not_authenticated');
+          expect(parsed.error?.serverId).toBe(configuration.activeServerId);
           expect(process.exitCode).toBe(1);
         } finally {
           await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -251,12 +253,13 @@ describe('happier auth status --json', () => {
           const parsed = JSON.parse(output.text().trim()) as {
             ok: boolean;
             kind: string;
-            data?: { authenticated?: boolean; machineId?: string; accountId?: string; accountLabel?: string; relayHost?: string };
-            error?: { code?: string };
+            data?: { authenticated?: boolean; machineId?: string; accountId?: string; accountLabel?: string; relayHost?: string; serverId?: string };
+            error?: { code?: string; serverId?: string };
           };
           expect(parsed.ok).toBe(true);
           expect(parsed.kind).toBe('auth_status');
           expect(parsed.data?.authenticated).toBe(true);
+          expect(parsed.data?.serverId).toBe(configuration.activeServerId);
           expect(parsed.data?.machineId).toBe('mid_ephemeral');
           expect(parsed.data?.accountId).toBe('acct_1');
           // The same identity the human output prints, so a person can compare it with the app.

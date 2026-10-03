@@ -5,6 +5,7 @@
  * Environment files should be loaded using Node's --env-file flag
  */
 
+import { resolveServerProfileApiUrl } from '@/server/serverProfileApiUrl';
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, isAbsolute, resolve as resolvePath } from 'node:path'
@@ -1174,7 +1175,7 @@ function resolveServerSelection(params: Readonly<{
       : null;
     if (envActivePersisted && !matchesUrl(envActivePersisted, envCanonicalServerUrl)) {
       const canonical = normalizeServerUrl(envActivePersisted.serverUrl);
-      const apiServerUrl = normalizeServerUrl(envActivePersisted.localServerUrl ?? '') || canonical;
+      const apiServerUrl = normalizeServerUrl(resolveServerProfileApiUrl(envActivePersisted));
       return {
         activeServerId: resolveActiveServerId(envActivePersisted.id),
         serverUrl: canonical,
@@ -1257,7 +1258,7 @@ function resolveServerSelection(params: Readonly<{
     const active = params.persisted.servers[params.persisted.activeServerId];
     if (active) {
       const canonical = normalizeServerUrl(active.serverUrl);
-      const apiServerUrl = normalizeServerUrl(active.localServerUrl ?? '') || canonical;
+      const apiServerUrl = normalizeServerUrl(resolveServerProfileApiUrl(active));
       return {
         activeServerId: resolveActiveServerId(active.id),
         serverUrl: canonical,

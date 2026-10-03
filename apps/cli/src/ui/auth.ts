@@ -1,3 +1,4 @@
+import { selectMachineIdentityInSettings } from '@/auth/machineIdentitySettings';
 import { decodeBase64, encodeBase64, encodeBase64Url } from "@/api/encryption";
 import { configuration, reloadConfiguration } from "@/configuration";
 import { createHash, randomBytes } from "node:crypto";
@@ -739,98 +740,12 @@ export async function ensureMachineIdInSettings(opts?: {
             'cloud',
         );
 
-        const nextMachineIdByServerId = { ...(s.machineIdByServerId ?? {}) };
-        const prevMachineIdForServer = nextMachineIdByServerId[activeServerId];
-        const nextLastSubByServerId = { ...(s.lastTokenSubByServerId ?? {}) };
-        const nextConfirmed = { ...(s.machineIdConfirmedByServerByServerId ?? {}) };
-        const hadLastSub = activeServerId in nextLastSubByServerId;
-        const hadConfirmed = activeServerId in nextConfirmed;
-
-        if (!accountId) {
-            const current = prevMachineIdForServer;
-            if (hadLastSub) delete nextLastSubByServerId[activeServerId];
-            if (hadConfirmed) delete nextConfirmed[activeServerId];
-
-            if (forceNew || !current) {
-                const machineId = randomUUID();
-                nextMachineIdByServerId[activeServerId] = machineId;
-                return {
-                    ...s,
-                    machineIdByServerId: nextMachineIdByServerId,
-                    lastTokenSubByServerId: nextLastSubByServerId,
-                    machineIdConfirmedByServerByServerId: nextConfirmed,
-                    // derived (not persisted in v5+)
-                    machineId,
-                };
-            }
-
-            if (!hadLastSub && !hadConfirmed) {
-                return {
-                    ...s,
-                    machineId: current,
-                };
-            }
-
-            return {
-                ...s,
-                lastTokenSubByServerId: nextLastSubByServerId,
-                machineIdConfirmedByServerByServerId: nextConfirmed,
-                // derived (not persisted in v5+)
-                machineId: current,
-            };
-        }
-
-        const previousAccountId = typeof nextLastSubByServerId[activeServerId] === 'string'
-            ? String(nextLastSubByServerId[activeServerId]).trim()
-            : '';
-
-        const nextMachineIdByServerIdByAccountId = { ...(s.machineIdByServerIdByAccountId ?? {}) };
-        const currentPerAccount = { ...(nextMachineIdByServerIdByAccountId[activeServerId] ?? {}) };
-        const perAccountMachineId = typeof currentPerAccount[accountId] === 'string' ? String(currentPerAccount[accountId]).trim() : '';
-
-        const didAccountSwap = Boolean(previousAccountId && previousAccountId !== accountId);
-
-        let machineId: string | null = null;
-        if (!forceNew && perAccountMachineId) {
-            machineId = perAccountMachineId;
-        } else if (!forceNew && !didAccountSwap && prevMachineIdForServer && typeof prevMachineIdForServer === 'string' && prevMachineIdForServer.trim()) {
-            // Backfill mapping for older CLIs that only stored machineIdByServerId.
-            machineId = prevMachineIdForServer.trim();
-        }
-
-        if (!machineId) {
-            machineId = randomUUID();
-        }
-
-        const normalizedPrevMachineId = typeof prevMachineIdForServer === 'string' && prevMachineIdForServer.trim()
-            ? prevMachineIdForServer.trim()
-            : null;
-        const needsServerMachineIdUpdate = normalizedPrevMachineId !== machineId;
-        const needsLastSubUpdate = previousAccountId !== accountId;
-        const needsPerAccountUpdate = perAccountMachineId !== machineId;
-
-        const needsConfirmedUpdate = (needsServerMachineIdUpdate || needsLastSubUpdate) && activeServerId in nextConfirmed;
-
-        if (!needsServerMachineIdUpdate && !needsLastSubUpdate && !needsPerAccountUpdate && !needsConfirmedUpdate) {
-            return s;
-        }
-
-        nextMachineIdByServerId[activeServerId] = machineId;
-        nextLastSubByServerId[activeServerId] = accountId;
-        currentPerAccount[accountId] = machineId;
-        nextMachineIdByServerIdByAccountId[activeServerId] = currentPerAccount;
-
-        if (needsConfirmedUpdate) delete nextConfirmed[activeServerId];
-
-        return {
-            ...s,
-            machineIdByServerId: nextMachineIdByServerId,
-            lastTokenSubByServerId: nextLastSubByServerId,
-            machineIdByServerIdByAccountId: nextMachineIdByServerIdByAccountId,
-            machineIdConfirmedByServerByServerId: nextConfirmed,
-            // derived (not persisted in v5+)
-            machineId,
-        };
+        return selectMachineIdentityInSettings(s, {
+            serverId: activeServerId,
+            accountId,
+            forceNew,
+            createMachineId: randomUUID,
+        });
     });
 
     if (!settings.machineId) throw new Error('Failed to ensure machine id in settings');
