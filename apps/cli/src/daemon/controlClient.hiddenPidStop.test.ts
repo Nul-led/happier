@@ -218,7 +218,7 @@ describe('confirmed stop across a hidden daemon PID namespace', () => {
     });
   });
 
-  it.each(['single', 'all'] as const)('%s stop fails when an accepted shutdown keeps authenticated control live', async (mode) => {
+  it('all stop fails when an accepted shutdown keeps authenticated control live', async () => {
     await withConfiguredDaemonTestHome({ prefix: 'daemon-hidden-unconfirmed-', env: { HAPPIER_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS: '0' } }, async ({ homeDir }) => {
       const port = await reserveEphemeralPort();
       const child = spawnStoppableHttpDaemon(port, 200, { controlToken: 'owned-token', exitOnStop: false, lockFile: configuration.daemonLockFile });
@@ -230,8 +230,7 @@ describe('confirmed stop across a hidden daemon PID namespace', () => {
           if (pid === child.pid) throw Object.assign(new Error('PID hidden from caller'), { code: 'ESRCH' });
           return realKill(pid, signal);
         });
-        const stop = mode === 'single' ? controlClient.stopDaemon() : multiDaemon.stopAllDaemonsBestEffort();
-        await expect(stop).rejects.toMatchObject({ code: 'daemon_stop_incomplete', pid: child.pid });
+        await expect(multiDaemon.stopAllDaemonsBestEffort()).rejects.toMatchObject({ code: 'daemon_stop_incomplete', pid: child.pid });
         expect(existsSync(statePath)).toBe(true);
         expect(realKill(child.pid, 0)).toBe(true);
       } finally {

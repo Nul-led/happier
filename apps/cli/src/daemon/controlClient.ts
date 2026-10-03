@@ -3,7 +3,7 @@
  * Used by CLI commands to interact with running daemon
  */
 
-import { isPidProvablyAbsent } from '@happier-dev/cli-common/process';
+import { isPidPresent, isPidProvablyAbsent } from '@happier-dev/cli-common/process';
 import {
   processGenerationMatches,
   readProcessInstanceFingerprintSync,

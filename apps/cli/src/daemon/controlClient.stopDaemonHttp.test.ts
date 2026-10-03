@@ -1,10 +1,13 @@
 import http from 'node:http';
+import { existsSync } from 'node:fs';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { reloadConfiguration } from '@/configuration';
+import { configuration, reloadConfiguration } from '@/configuration';
 import { clearDaemonStateForTestTeardown, writeDaemonState } from '@/persistence';
-import { stopDaemonHttp, stopDaemonSession } from '@/daemon/controlClient';
+import { stopDaemon, stopDaemonHttp, stopDaemonSession } from '@/daemon/controlClient';
+import { reserveEphemeralPort, waitForHttpReady } from '@/testkit/http/portUtils';
+import { spawnStoppableHttpDaemon, withConfiguredDaemonTestHome, writeDaemonStateFixture } from './testkit/fakeDaemonLifecycle.testkit';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 
@@ -167,5 +170,29 @@ describe('daemon control client: stopDaemonHttp', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe('daemon control client: hidden PID force-stop refusal', () => {
+  it('preserves the typed incomplete result when accepted shutdown keeps authenticated control live', async () => {
+    await withConfiguredDaemonTestHome({ prefix: 'daemon-hidden-stop-client-', env: { HAPPIER_DAEMON_STOP_WAIT_FOR_DEATH_TIMEOUT_MS: '0' } }, async ({ homeDir }) => {
+      const port = await reserveEphemeralPort();
+      const child = spawnStoppableHttpDaemon(port, 200, { controlToken: 'owned-token', exitOnStop: false, lockFile: configuration.daemonLockFile });
+      const statePath = await writeDaemonStateFixture(homeDir, configuration.activeServerId, { pid: child.pid, httpPort: port, controlToken: 'owned-token' });
+      const realKill = process.kill.bind(process);
+      try {
+        expect(await waitForHttpReady(port)).toBe(true);
+        vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+          if (pid === child.pid) throw Object.assign(new Error('PID hidden from caller'), { code: 'ESRCH' });
+          return realKill(pid, signal);
+        });
+        await expect(stopDaemon()).rejects.toMatchObject({ code: 'daemon_stop_incomplete', pid: child.pid });
+        expect(existsSync(statePath)).toBe(true);
+        expect(realKill(child.pid, 0)).toBe(true);
+      } finally {
+        vi.restoreAllMocks();
+        await child.kill();
+      }
+    });
   });
 });
