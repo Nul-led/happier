@@ -3333,6 +3333,8 @@ export const en = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Mute phone while a computer is focused",
+        mutePhoneWhenComputerFocusedSubtitle: "Mute Ready and request push alerts while any Happier computer window is focused. Alerts resume when no computer window is focused.",
         badges: {
             title: 'Badges',
             footer: 'Controls badge counts and desktop indicators.',
@@ -4172,6 +4174,24 @@ export const en = {
             auto: 'Auto',
             labels: 'Labels',
             icons: 'Icons only',
+        },
+        loadingIndicator: "Loading Indicator",
+        loadingIndicatorStyle: "Style",
+        loadingIndicatorDescription: "How spinners look while work is in progress",
+        loadingIndicatorFooter: "With Reduce Motion on, dot styles hold still and fade gently, and the Classic Ring stops turning.",
+        loadingIndicatorOptions: {
+            wave: "Wave",
+            handwritten: "Handwritten",
+            buildAndRelease: "Build and Release",
+            relay: "Relay",
+            twinStems: "Twin Stems",
+            slowBreath: "Slow Breath",
+            starfield: "Starfield",
+            sweep: "Sweep",
+            radar: "Radar",
+            ripple: "Ripple",
+            aurora: "Aurora",
+            classicRing: "Classic Ring",
         },
         avatarStyle: 'Avatar Style',
         avatarStyleDescription: 'Choose session avatar appearance',
@@ -6466,6 +6486,7 @@ export const en = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% left`,
+            badgeLabel: 'Context',
             windowTitle: 'Context Window',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} context used`,
@@ -7868,11 +7889,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider usage',
-              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available.',
+              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available. Pin a usage window on a connected account to show it as an extra gauge.',
               visibilityTitle: 'Show provider usage gauge',
               visibilityEnabledSubtitle: 'Show remaining provider quota next to the composer when available.',
               visibilityHiddenSubtitle: 'Hide provider quota from the composer.',
               windowTitle: 'Gauge window',
+              labelsTitle: 'Show usage labels',
+              labelsSubtitle: 'Label context and provider gauges above the composer.',
               windowMostConstrainedTitle: 'Most constrained',
               windowMostConstrainedSubtitle: 'Show the reliable quota window with the least remaining quota.',
               windowDailyTitle: 'Daily',

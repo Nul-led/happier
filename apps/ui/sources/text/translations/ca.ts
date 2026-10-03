@@ -3409,6 +3409,8 @@ export const ca: TranslationStructure = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silencia el telèfon mentre fas servir l’ordinador",
+        mutePhoneWhenComputerFocusedSubtitle: "Silencia els avisos A punt i les sol·licituds mentre alguna finestra de Happier a l’ordinador té el focus. Es reprenen quan cap finestra de l’ordinador té el focus.",
         badges: {
             title: 'Insígnies en aquest dispositiu',
             footer: 'Tria quina activitat contribueix a la insígnia de la icona de l’app en aquest dispositiu.',
@@ -4234,6 +4236,24 @@ export const ca: TranslationStructure = {
             auto: 'Automàtic',
             labels: 'Etiquetes',
             icons: 'Només icones',
+        },
+        loadingIndicator: "Indicador de càrrega",
+        loadingIndicatorStyle: "Estil",
+        loadingIndicatorDescription: "Com es veuen els indicadors mentre hi ha feina en curs",
+        loadingIndicatorFooter: "Amb l'opció «Reduir el moviment» activada, els estils de punts es queden quiets i s'esvaeixen suaument, i l'Anell clàssic deixa de girar.",
+        loadingIndicatorOptions: {
+            wave: "Onada",
+            handwritten: "Manuscrit",
+            buildAndRelease: "Construeix i allibera",
+            relay: "Relleu",
+            twinStems: "Tiges bessones",
+            slowBreath: "Respiració lenta",
+            starfield: "Camp d'estrelles",
+            sweep: "Escombrada",
+            radar: "Radar",
+            ripple: "Ona",
+            aurora: "Aurora",
+            classicRing: "Anell clàssic",
         },
         avatarStyle: 'Estil d\'avatar',
         avatarStyleDescription: 'Tria l\'aparença de l\'avatar de la sessió',
@@ -6435,6 +6455,7 @@ deps: {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
+            badgeLabel: 'Context',
             windowTitle: 'Finestra de context',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} de context utilitzat`,
@@ -7842,11 +7863,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Ús del proveïdor',
-              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor.',
+              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor. Fixa una finestra d’ús en un compte connectat per mostrar-la com a indicador addicional.',
               visibilityTitle: 'Mostra l’indicador d’ús del proveïdor',
               visibilityEnabledSubtitle: 'Mostra la quota restant del proveïdor al costat del compositor quan estigui disponible.',
               visibilityHiddenSubtitle: 'Amaga la quota del proveïdor al compositor.',
               windowTitle: 'Finestra de l’indicador',
+              labelsTitle: 'Mostra les etiquetes d’ús',
+              labelsSubtitle: 'Etiqueta els indicadors de context i del proveïdor.',
               windowMostConstrainedTitle: 'Més limitada',
               windowMostConstrainedSubtitle: 'Mostra la finestra de quota fiable amb menys quota restant.',
               windowDailyTitle: 'Diària',

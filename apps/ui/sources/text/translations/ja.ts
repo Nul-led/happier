@@ -3890,6 +3890,8 @@ localTailscale: {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "コンピューター操作中はスマートフォンの通知をミュート",
+        mutePhoneWhenComputerFocusedSubtitle: "コンピューター上の Happier ウィンドウにフォーカスがある間、完了とリクエストのプッシュ通知をミュートします。Happier のコンピューターウィンドウがどれもフォーカスされていないと、通知を再開します。",
     badges: {
       title: "このデバイスのバッジ",
       footer: "このデバイスのアプリアイコンバッジにどのアクティビティを反映するかを選択します。",
@@ -4736,6 +4738,24 @@ localTailscale: {
       auto: "自動",
       labels: "ラベル",
       icons: "アイコンのみ",
+    },
+    loadingIndicator: "読み込みインジケーター",
+    loadingIndicatorStyle: "スタイル",
+    loadingIndicatorDescription: "処理中に表示されるインジケーターの見た目",
+    loadingIndicatorFooter: "「視差効果を減らす」がオンのときは、ドットのスタイルは動かずにゆっくりフェードし、クラシックリングは回転を止めます。",
+    loadingIndicatorOptions: {
+      wave: "ウェーブ",
+      handwritten: "手書き",
+      buildAndRelease: "ビルド＆リリース",
+      relay: "リレー",
+      twinStems: "ツインステム",
+      slowBreath: "スローブレス",
+      starfield: "スターフィールド",
+      sweep: "スイープ",
+      radar: "レーダー",
+      ripple: "リップル",
+      aurora: "オーロラ",
+      classicRing: "クラシックリング",
     },
     avatarStyle: "アバタースタイル",
     avatarStyleDescription: "セッションアバターの外観を選択",
@@ -7091,6 +7111,7 @@ localTailscale: {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `残り ${percent}%`,
+      badgeLabel: "コンテキスト",
       windowTitle: "コンテキストウィンドウ",
       usedDetail: ({
         percent,
@@ -8539,12 +8560,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "プロバイダー使用量",
         footer:
-          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。",
+          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。接続済みアカウントで使用量ウィンドウをピン留めすると、追加のゲージとして表示されます。",
         visibilityTitle: "プロバイダー使用量ゲージを表示",
         visibilityEnabledSubtitle:
           "利用可能な場合、入力欄の横にプロバイダーの残りクォータを表示します。",
         visibilityHiddenSubtitle: "入力欄のプロバイダークォータを非表示にします。",
         windowTitle: "ゲージの期間",
+        labelsTitle: '使用量ラベルを表示',
+        labelsSubtitle: 'コンテキストとプロバイダーの使用量にラベルを表示します。',
         windowMostConstrainedTitle: "最も制約が強い",
         windowMostConstrainedSubtitle:
           "信頼できるクォータ期間のうち残りが最も少ないものを表示します。",

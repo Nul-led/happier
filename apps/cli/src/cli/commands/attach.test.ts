@@ -23,6 +23,7 @@ import { createCodexSharedLocalControl } from '@/backends/codex/localControl/cre
 import { createCodexSharedAttachArgs } from '@/backends/codex/localControl/createCodexSharedAttachArgs';
 import { createAttachedTerminalSupervisor } from '@/agent/localControl/createAttachedTerminalSupervisor';
 
+import { terminalLauncherBoundary, expectTerminalNativeInvocation } from '@/testkit/process/terminalLauncher';
 import { handleAttachCommand } from './attach';
 
 const { mockIo } = vi.hoisted(() => ({ mockIo: vi.fn() }));
@@ -146,7 +147,7 @@ describe('happier attach', () => {
       runTmuxAttachFn: vi.fn(async () => 0),
     })).rejects.toThrow('process.exit(1)');
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.anything(), 'Session belongs to another machine and cannot be attached from this computer.');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Session belongs to another machine and cannot be attached from this computer.'));
     errorSpy.mockRestore();
   });
 
@@ -472,7 +473,7 @@ describe('happier attach', () => {
       return true;
     });
     // Only child-process creation is replaced, not either attachment owner.
-    const managedSpawn = vi.fn(() => managedChild) as unknown as typeof spawn;
+    const managedSpawn = vi.fn(() => terminalLauncherBoundary(managedChild)) as unknown as typeof spawn;
     const supervisor = createOpenCodeTuiSupervisor({ command: 'opencode-fixture', env: {}, spawnProcess: managedSpawn });
     const controller = createOpenCodeSharedLocalControl({
       support: resolveOpenCodeLocalControlSupport({ backendMode: 'server', hasTTY: true }),
@@ -489,7 +490,7 @@ describe('happier attach', () => {
     });
     const standaloneChild = new ChildProcess();
     const standaloneKill = vi.spyOn(standaloneChild, 'kill');
-    const standaloneSpawn = vi.fn(() => standaloneChild);
+    const standaloneSpawn = vi.fn(() => terminalLauncherBoundary(standaloneChild));
     const command = handleAttachCommand([sessionId], {
       readCredentialsFn: async () => credentials,
       readSettingsFn: async () => localSettings,
@@ -503,10 +504,10 @@ describe('happier attach', () => {
     const settled = command.then(() => null, (error: unknown) => error);
     try {
       await vi.waitFor(() => expect(standaloneSpawn).toHaveBeenCalled());
-      expect(standaloneSpawn.mock.calls[0]).toEqual([
+      await expectTerminalNativeInvocation(standaloneSpawn.mock.calls,
         'opencode-fixture', ['--server', metadata.opencodeServerBaseUrl, '--session', nativeId, metadata.path],
         expect.objectContaining({ stdio: 'inherit', shell: false }),
-      ]);
+      );
       expect(readRelayState()).toMatchObject({ controlledByUser: false, localControl: {
         attached: owned, canDetach: owned, remoteWritable: true, topology: 'shared',
       } });
@@ -572,7 +573,7 @@ describe('happier attach', () => {
     );
     const children: ChildProcess[] = [];
     const spawnProcess = vi.fn(() => {
-      const child = new ChildProcess();
+      const child = terminalLauncherBoundary(new ChildProcess());
       let exitCode: number | null = null;
       Object.defineProperty(child, 'exitCode', { get: () => exitCode });
       vi.spyOn(child, 'kill').mockImplementation(() => {
@@ -1005,7 +1006,7 @@ describe('happier attach', () => {
       runWindowsConsoleAttachFn: vi.fn(async () => 0),
     })).rejects.toThrow('process.exit(1)');
 
-    expect(errorSpy).toHaveBeenCalledWith(expect.anything(), 'This Windows session was started hidden and cannot be attached later.');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('This Windows session was started hidden and cannot be attached later.'));
     errorSpy.mockRestore();
   });
 });

@@ -3551,6 +3551,8 @@ export const ru: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Отключать уведомления телефона при работе на компьютере",
+        mutePhoneWhenComputerFocusedSubtitle: "Не отправлять уведомления «Готово» и запросы, пока хотя бы одно окно Happier на компьютере имеет фокус. Они возобновятся, когда ни одно окно на компьютере не будет в фокусе.",
     push: {
       title: "Push-уведомления",
       footer:
@@ -4403,6 +4405,24 @@ export const ru: TranslationStructure = {
       auto: "Авто",
       labels: "Подписи",
       icons: "Только значки",
+    },
+    loadingIndicator: "Индикатор загрузки",
+    loadingIndicatorStyle: "Стиль",
+    loadingIndicatorDescription: "Как выглядят индикаторы, пока идёт работа",
+    loadingIndicatorFooter: "Когда включено «Уменьшение движения», точечные стили не двигаются, а плавно гаснут и появляются, а Классическое кольцо перестаёт вращаться.",
+    loadingIndicatorOptions: {
+      wave: "Волна",
+      handwritten: "От руки",
+      buildAndRelease: "Сборка и выпуск",
+      relay: "Эстафета",
+      twinStems: "Двойные стебли",
+      slowBreath: "Медленное дыхание",
+      starfield: "Звёздное поле",
+      sweep: "Развёртка",
+      radar: "Радар",
+      ripple: "Рябь",
+      aurora: "Сияние",
+      classicRing: "Классическое кольцо",
     },
     avatarStyle: "Стиль аватара",
     avatarStyleDescription: "Выберите внешний вид аватара сессии",
@@ -6822,6 +6842,7 @@ export const ru: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `Осталось ${percent}%`,
+      badgeLabel: "Контекст",
       windowTitle: "Окно контекста",
       usedDetail: ({
         percent,
@@ -8277,12 +8298,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Использование провайдера",
         footer:
-          "Управляет индикатором квоты рядом с полем ввода, когда доступны надёжные данные использования провайдера.",
+          "Управляет индикатором квоты рядом с полем ввода, когда доступны надёжные данные использования провайдера. Закрепите окно использования в подключённом аккаунте, чтобы показать его как дополнительный индикатор.",
         visibilityTitle: "Показывать индикатор использования провайдера",
         visibilityEnabledSubtitle:
           "Показывать оставшуюся квоту провайдера рядом с полем ввода, когда она доступна.",
         visibilityHiddenSubtitle: "Скрыть квоту провайдера рядом с полем ввода.",
         windowTitle: "Окно индикатора",
+        labelsTitle: 'Показывать подписи использования',
+        labelsSubtitle: 'Подписывать индикаторы контекста и провайдера.',
         windowMostConstrainedTitle: "Самое ограниченное",
         windowMostConstrainedSubtitle:
           "Показывать надёжное окно квоты с наименьшим остатком.",

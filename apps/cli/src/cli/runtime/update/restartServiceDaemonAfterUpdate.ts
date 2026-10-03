@@ -97,6 +97,9 @@ async function observeServiceBeforeUpdate(
   channel: PublicReleaseRingId,
 ): Promise<ServiceDaemonBeforeCliUpdate<ServiceRestartTarget>> {
   const observed = await readDaemonStateForServerId(target.lifecycleServerId);
+  if (observed?.presence === 'unverified') {
+    throw new Error(`Daemon presence is unverified for service relay ${target.lifecycleServerId}; retry the update when authenticated control is available`);
+  }
   // The label the service hands its daemon (`HAPPIER_DAEMON_SERVICE_LABEL`), which the daemon records.
   const label = resolveDaemonServiceLaunchdLabel(entry.serverId, entry.releaseChannel, entry.targetMode);
   return {
@@ -227,6 +230,9 @@ async function restartServiceDaemonOntoInstalledCli(params: Readonly<{
   }
 
   const observed = await readDaemonStateForServerId(target.lifecycleServerId);
+  if (observed?.presence === 'unverified') {
+    throw new Error(`Daemon presence is unverified for service relay ${target.lifecycleServerId}; retry the update when authenticated control is available`);
+  }
   const runningVersion = observed?.running ? observed.state.startedWithCliVersion ?? null : null;
   if (runningVersion !== params.expectedVersion) {
     throw new Error(`the background service runs ${runningVersion ?? 'no daemon'} instead of ${params.expectedVersion}`);

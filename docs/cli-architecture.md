@@ -270,6 +270,37 @@ holding its `daemon.state.json` and `daemon.state.json.lock` — and only that s
 - `daemon stop` stops the current scope only; `daemon stop --all` and `auth logout --all` deliberately
   stop every relay's daemon.
 
+### Confirmed daemon stop outcomes (development)
+
+Current 0.2 development source reports `not_running` separately from a confirmed `stopped`
+result. `controlClient.stopDaemon` owns single-daemon stop confirmation: startup-only lock
+holders remain alive and return `daemon_stop_incomplete`; stale live owners whose process
+identity cannot be read also remain incomplete, while startup/health diagnostics retain their
+stale-ignore policy. Graceful stop waits for process exit, and forced stop requires daemon process classification and confirmed death after the
+existing TERM/KILL waits. The shared process signal probe treats access denial and unknown
+probe failures as inconclusive, preserving live ownership. For a PID hidden by a namespace,
+the existing authenticated control probe establishes publication presence. Its transport failures
+remain unverified. After observing a hidden owner through authenticated ping or an accepted
+authenticated stop, confirmed stop requires the matching lifecycle lock to release after control ceases, because control closes before final cleanup; without an
+observed lock confirmation remains incomplete. Ordinary dead publications remain absent. Status
+projections and service-update readers share the same presence owner; full daemon health inspection
+also validates process identity. An unverified publication remains explicit in status output and
+blocks service-update planning until authenticated presence can be observed. Initial startup-only
+locks outside an observable PID namespace,
+with no authenticated publication, cannot establish that namespace relationship.
+
+`multiDaemon.stopAllDaemonsBestEffort` attempts every durable publication under the home's
+servers directory, including removed profiles, all release-ring filenames, and startup-only
+locks. It attempts siblings after a failed target and returns a confirmed stopped count or
+`not_running`. It re-enumerates the same inventory after shutdown to detect a live successor
+publication or startup-only lock before `auth logout --all` can delete the home.
+After an observed hidden owner stops, namespace uncertainty remains scoped to its exact
+publication and lock path; unrelated stale release-ring siblings retain ordinary absence. State and lock
+cleanup remain owned by the daemon lifecycle holder; these observers do not delete publications.
+Stop commands and authentication report the returned outcome, and logout-all preserves the
+home on incomplete stop. Restart remains best effort for its stop phase, logs incomplete stop
+through the default file logger, and requires its existing distinct running identity proof.
+
 ### One CLI update transaction (plan R13 f)
 
 `runManagedCliUpdate` (`packages/cli-common/src/firstPartyRuntime/runManagedCliUpdate.ts`) is the

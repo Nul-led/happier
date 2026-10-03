@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createSessionClientWithMetadata } from '@/testkit/backends/sessionFixtures';
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
-import { normalizeConfigOptionsArray, publishAcpSessionModelsState } from './sessionModelsState';
+import { applyObservedAcpModelOptions, normalizeConfigOptionsArray, publishAcpSessionModelsState } from './sessionModelsState';
 
 describe('normalizeConfigOptionsArray', () => {
   it('preserves exact nonblank config identifiers and values', () => {
@@ -118,5 +118,26 @@ describe('publishAcpSessionModelsState', () => {
       availableModels: [{ id: 'gemini-new', name: 'Gemini New' }],
     });
     expect(getMetadata().acpSessionModelsV1).toEqual(getMetadata().sessionModelsV1);
+  });
+});
+
+
+describe('applyObservedAcpModelOptions', () => {
+  it('uses current-session choices without retaining stale choices or changing other models', () => {
+    const catalogEffort = { id: 'reasoning_effort', currentValue: 'high',
+      options: [{ value: 'medium' }, { value: 'high' }] };
+    const observedEffort = { id: 'reasoning_effort', currentValue: 'medium', options: [{ value: 'medium' }] };
+    const thinking = { id: 'thinking', currentValue: 'on', options: [{ value: 'on' }] };
+    const models = [
+      { id: 'default' },
+      { id: 'model-a', modelOptions: [catalogEffort, thinking] },
+      { id: 'model-b', modelOptions: [catalogEffort] },
+    ];
+    expect(applyObservedAcpModelOptions(models, 'model-a', [observedEffort])).toEqual([
+      { id: 'default' },
+      { id: 'model-a', modelOptions: [observedEffort] },
+      { id: 'model-b', modelOptions: [catalogEffort] },
+    ]);
+    expect(applyObservedAcpModelOptions(models, 'unknown-model', [observedEffort])).toEqual(models);
   });
 });

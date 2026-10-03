@@ -126,6 +126,18 @@ Notes:
 - `--model` lets you target a specific model for that message when the backend supports it.
 - `--json` + explicit timeouts are recommended for scripts.
 
+### Choosing one message identity (`--local-id`)
+
+Development builds let CLI coordinators choose the message's `localId` before sending:
+
+```bash
+happier session send <session-id-or-prefix> "ping" --local-id 'board-wake-42' --json
+```
+
+Keep that exact ID when correlating the send result with session history or retrying a send.
+IDs must be nonblank and cannot begin with `-`. The relay rejects the reserved `agent-transition:` prefix.
+This override belongs to the CLI; MCP and voice tools continue using host-generated IDs.
+
 ## History
 
 Get recent transcript rows:

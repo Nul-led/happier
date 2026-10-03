@@ -2771,12 +2771,7 @@ export class AcpBackend implements AgentBackend {
     const configOptionsCandidate = response?.configOptions;
     const configOptionsRaw = Array.isArray(configOptionsCandidate) ? configOptionsCandidate : null;
     if (configOptionsRaw) {
-      const next = this.normalizeSupportedSessionConfigOptions(configOptionsRaw);
-      this.sessionConfigOptionsState = next.map((option) =>
-        option.id === normalizedConfigId
-          ? { ...option, currentValue: normalizedValueId }
-          : option
-      );
+      this.sessionConfigOptionsState = this.normalizeSupportedSessionConfigOptions(configOptionsRaw);
     } else if (this.sessionConfigOptionsState) {
       this.sessionConfigOptionsState = this.sessionConfigOptionsState.map((option) =>
         option.id === normalizedConfigId
@@ -2790,10 +2785,11 @@ export class AcpBackend implements AgentBackend {
       });
       if (modelState) this.sessionModelState = modelState;
     }
+    if (!this.sessionConfigOptionsState) return;
     this.emit({
       type: 'event',
       name: 'config_options_update',
-      payload: { configOptions: this.sessionConfigOptionsState ?? [] },
+      payload: { configOptions: this.sessionConfigOptionsState },
     });
   }
 

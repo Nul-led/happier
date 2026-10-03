@@ -3597,6 +3597,8 @@ export const es: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silenciar el teléfono al usar el ordenador",
+        mutePhoneWhenComputerFocusedSubtitle: "Silencia las notificaciones de sesión lista y las solicitudes de permiso o acción mientras alguna ventana de Happier en un ordenador tiene el foco. Se reanudan cuando ninguna ventana del ordenador tiene el foco.",
     badges: {
       title: 'Insignias en este dispositivo',
       footer: 'Elige qué actividad contribuye a la insignia del icono de la app en este dispositivo.',
@@ -4449,6 +4451,24 @@ export const es: TranslationStructure = {
       auto: "Automático",
       labels: "Etiquetas",
       icons: "Solo íconos",
+    },
+    loadingIndicator: "Indicador de carga",
+    loadingIndicatorStyle: "Estilo",
+    loadingIndicatorDescription: "Cómo se ven los indicadores mientras hay trabajo en curso",
+    loadingIndicatorFooter: "Con Reducir movimiento activado, los estilos de puntos se quedan quietos y se desvanecen suavemente, y el Anillo clásico deja de girar.",
+    loadingIndicatorOptions: {
+      wave: "Ola",
+      handwritten: "Manuscrito",
+      buildAndRelease: "Construir y soltar",
+      relay: "Relevo",
+      twinStems: "Tallos gemelos",
+      slowBreath: "Respiración lenta",
+      starfield: "Campo de estrellas",
+      sweep: "Barrido",
+      radar: "Radar",
+      ripple: "Onda",
+      aurora: "Aurora",
+      classicRing: "Anillo clásico",
     },
     avatarStyle: "Estilo de avatar",
     avatarStyleDescription: "Elige la apariencia del avatar de sesión",
@@ -6821,6 +6841,7 @@ export const es: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contexto",
       windowTitle: "Ventana de contexto",
       usedDetail: ({
         percent,
@@ -8299,12 +8320,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del proveedor",
         footer:
-          "Controla el indicador de cuota mostrado junto al compositor cuando hay uso fiable del proveedor.",
+          "Controla el indicador de cuota mostrado junto al compositor cuando hay uso fiable del proveedor. Fija una ventana de uso en una cuenta conectada para mostrarla como indicador adicional.",
         visibilityTitle: "Mostrar indicador de uso del proveedor",
         visibilityEnabledSubtitle:
           "Muestra la cuota restante del proveedor junto al compositor cuando esté disponible.",
         visibilityHiddenSubtitle: "Oculta la cuota del proveedor en el compositor.",
         windowTitle: "Ventana del indicador",
+        labelsTitle: 'Mostrar etiquetas de uso',
+        labelsSubtitle: 'Etiqueta los indicadores de contexto y del proveedor.',
         windowMostConstrainedTitle: "Más limitada",
         windowMostConstrainedSubtitle:
           "Muestra la ventana de cuota fiable con menos cuota restante.",

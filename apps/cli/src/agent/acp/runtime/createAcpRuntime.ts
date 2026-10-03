@@ -30,7 +30,7 @@ import type { AcpRuntimeSessionClient } from '@/agent/acp/sessionClient';
 import { isAbortLikeError } from '@/agent/executionRuns/runtime/turnDelivery';
 import type { ACPMessageData } from '@/api/session/sessionMessageTypes';
 import type { AgentState, Metadata } from '@/api/types';
-import { getAgentModelConfig, getAgentSessionModeDescriptor, type AgentId } from '@happier-dev/agents';
+import { getAgentModelConfig, getAgentSessionModeDescriptor, readNewestSessionModelsMetadataStateV1, type AgentId } from '@happier-dev/agents';
 import { updateAgentStateBestEffort, updateMetadataBestEffort } from '@/api/session/sessionWritesBestEffort';
 import { createStreamedTranscriptWriter } from '@/api/session/streamedTranscriptWriter';
 import type { TurnAssistantPreviewTracker } from '@/agent/runtime/turnAssistantPreviewTracker';
@@ -49,6 +49,7 @@ import {
   PI_PROVIDER_SESSION_FAILURE_AFTER_PROMPT_ACCEPTANCE_DIAGNOSTIC,
 } from '@/agent/runtime/session/errors/classifyPrimarySessionRuntimeIssue';
 import {
+  applyObservedAcpModelOptions,
   collectAcpModelScopedConfigOptions,
   normalizeConfigOptionsArray,
   publishAcpSessionModelsState,
@@ -1660,7 +1661,8 @@ export function createAcpRuntime(params: {
               requireAvailableModels: true,
             });
           }
-          if (name === 'config_options_state' || name === 'config_options_update') {
+          if ((name === 'config_options_state' || name === 'config_options_update')
+            && Array.isArray(asRecord(msg.payload)?.configOptions)) {
             const payloadRecord = asRecord(msg.payload);
             const configOptions = normalizeConfigOptionsArray(payloadRecord?.configOptions);
             const derivedModels = (() => {
@@ -1670,7 +1672,6 @@ export function createAcpRuntime(params: {
 
               const modelOpt = configOptions.find(isAcpModelConfigOptionLike);
               if (!modelOpt || !Array.isArray(modelOpt.options)) return null;
-              const modelScopedOptions = collectAcpModelScopedConfigOptions(configOptions);
 
               const currentValue = modelOpt.currentValue;
               const currentModelId =
@@ -1685,7 +1686,6 @@ export function createAcpRuntime(params: {
                   id: String(opt.value),
                   name: String(opt.name),
                   ...(typeof opt.description === 'string' ? { description: String(opt.description) } : {}),
-                  ...(modelScopedOptions.length > 0 ? { modelOptions: modelScopedOptions } : {}),
                 }))
                 .filter((m) => m.id && m.name);
               if (modelOpt.options.length > 0 && availableModels.length === 0) return null;
@@ -1725,13 +1725,30 @@ export function createAcpRuntime(params: {
                 };
                 next.acpConfigOptionsV1 = next.sessionConfigOptionsV1;
 
-                if (derivedModels) {
+                const previousModels = readNewestSessionModelsMetadataStateV1(metadata as unknown as Record<string, unknown>);
+                const modelSnapshot = derivedModels ?? (
+                  !params.deriveSessionModelsFromConfigOptions
+                    && Array.isArray(payloadRecord?.configOptions)
+                    && !configOptions.some(isAcpModelConfigOptionLike)
+                    && previousModels?.provider === params.provider
+                    ? previousModels
+                    : null
+                );
+                if (modelSnapshot) {
+                  const availableModels = params.deriveSessionModelsFromConfigOptions
+                    ? modelSnapshot.availableModels
+                    : applyObservedAcpModelOptions(
+                      modelSnapshot.availableModels,
+                      modelSnapshot.currentModelId,
+                      collectAcpModelScopedConfigOptions(configOptions),
+                      previousModels?.provider === params.provider ? previousModels.availableModels : [],
+                    );
                   next.sessionModelsV1 = {
                     v: 1,
                     provider: params.provider,
-                    updatedAt: now,
-                    currentModelId: derivedModels.currentModelId,
-                    availableModels: derivedModels.availableModels,
+                    updatedAt: derivedModels ? now : previousModels?.updatedAt ?? 0,
+                    currentModelId: modelSnapshot.currentModelId,
+                    availableModels,
                   };
                   next.acpSessionModelsV1 = next.sessionModelsV1;
                 }

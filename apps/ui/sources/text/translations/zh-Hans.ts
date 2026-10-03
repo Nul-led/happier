@@ -3497,6 +3497,8 @@ export const zhHans: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "电脑窗口获得焦点时静音手机通知",
+        mutePhoneWhenComputerFocusedSubtitle: "任一电脑上的 Happier 窗口获得焦点时，不发送就绪和请求推送通知。所有电脑窗口都失去焦点后恢复通知。",
     badges: {
       title: "此设备上的角标",
       footer: "选择在此设备上哪些活动会影响应用图标角标。",
@@ -4324,6 +4326,24 @@ export const zhHans: TranslationStructure = {
       auto: "自动",
       labels: "文字",
       icons: "仅图标",
+    },
+    loadingIndicator: "加载指示器",
+    loadingIndicatorStyle: "样式",
+    loadingIndicatorDescription: "工作进行时指示器的样子",
+    loadingIndicatorFooter: "开启“减弱动态效果”后，点状样式保持静止并轻柔地淡入淡出，经典圆环则停止旋转。",
+    loadingIndicatorOptions: {
+      wave: "波浪",
+      handwritten: "手写",
+      buildAndRelease: "构建与释放",
+      relay: "接力",
+      twinStems: "双茎",
+      slowBreath: "缓慢呼吸",
+      starfield: "星空",
+      sweep: "扫掠",
+      radar: "雷达",
+      ripple: "涟漪",
+      aurora: "极光",
+      classicRing: "经典圆环",
     },
     avatarStyle: "头像风格",
     avatarStyleDescription: "选择会话头像外观",
@@ -6612,6 +6632,7 @@ export const zhHans: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `剩余 ${percent}%`,
+      badgeLabel: "上下文",
       windowTitle: "上下文窗口",
       usedDetail: ({
         percent,
@@ -8058,12 +8079,14 @@ settingsSession: {
     providerUsageGauge: {
       title: "提供方使用量",
       footer:
-        "当有可靠的提供方使用量数据时，控制输入框旁显示的配额仪表。",
+        "当有可靠的提供方使用量数据时，控制输入框旁显示的配额仪表。在已连接的账户中固定一个用量窗口，即可将其显示为额外的仪表。",
       visibilityTitle: "显示提供方使用量仪表",
       visibilityEnabledSubtitle:
         "可用时在输入框旁显示提供方剩余配额。",
       visibilityHiddenSubtitle: "在输入框旁隐藏提供方配额。",
       windowTitle: "仪表窗口",
+      labelsTitle: '显示用量标签',
+      labelsSubtitle: '为上下文和提供商用量仪表显示标签。',
       windowMostConstrainedTitle: "最受限制",
       windowMostConstrainedSubtitle:
         "显示可靠配额窗口中剩余最少的窗口。",

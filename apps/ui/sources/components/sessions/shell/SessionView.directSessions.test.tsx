@@ -2679,6 +2679,22 @@ describe('SessionView (direct sessions)', () => {
     expect(screen.findByTestId('session-usageLimit-recovery-consumeResetCredit')).toBeNull();
   });
 
+  it('adds the connected account\'s pinned meters as extra composer rings', async () => {
+    featureEnabledState['connectedServices.quotas'] = true;
+    installConnectedServiceWorkProfileRecoveryCreditSession();
+    const snapshot = buildOpenAiCodexWorkQuotaSnapshot({ fetchedAt: 2_000, used: 82 });
+    quotaSnapshotsState.current = {
+      'openai-codex/work': { ...snapshot, meters: [...snapshot.meters, { ...snapshot.meters[0]!, meterId: 'five_hour', label: '5-hour', used: 30 }] },
+    };
+
+    settingByKeyState.current.connectedServicesQuotaPinnedMeterIdsByKey = { 'openai-codex/work': ['five_hour'] };
+
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    expect(findAgentInput(screen).props.providerUsageGauge.usageRings
+      .map((ring: { meterId: string; ringValueLabel: string }) => [ring.meterId, ring.ringValueLabel]))
+      .toEqual([['weekly', '18'], ['five_hour', '70']]);
+  });
+
   it('uses connected-service reset-credit consumption from the connected-service quota view for connected-service-bound account usage', async () => {
     featureEnabledState['connectedServices.quotas'] = true;
     featureEnabledState['sessions.usageLimitRecovery'] = true;

@@ -3332,6 +3332,8 @@ export const de: TranslationStructure = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Handy stummschalten, wenn ein Computer fokussiert ist",
+        mutePhoneWhenComputerFocusedSubtitle: "Ready- und Anfrage-Pushs stummschalten, solange ein Happier-Fenster auf einem Computer fokussiert ist. Sie werden wieder zugestellt, wenn kein Computer-Fenster fokussiert ist.",
         badges: {
             title: 'Badges',
             footer: 'Steuert Badge-Zahlen und Desktop-Anzeigen.',
@@ -4154,6 +4156,24 @@ export const de: TranslationStructure = {
             auto: 'Auto',
             labels: 'Beschriftungen',
             icons: 'Nur Icons',
+        },
+        loadingIndicator: "Ladeanzeige",
+        loadingIndicatorStyle: "Stil",
+        loadingIndicatorDescription: "Wie Ladeanzeigen aussehen, während gearbeitet wird",
+        loadingIndicatorFooter: "Mit „Bewegung reduzieren“ bleiben die Punktstile stehen und blenden sanft ein und aus, und der Klassische Ring hört auf, sich zu drehen.",
+        loadingIndicatorOptions: {
+            wave: "Welle",
+            handwritten: "Handschrift",
+            buildAndRelease: "Aufbauen und Loslassen",
+            relay: "Staffel",
+            twinStems: "Zwillingsstämme",
+            slowBreath: "Langsamer Atem",
+            starfield: "Sternenfeld",
+            sweep: "Schwenk",
+            radar: "Radar",
+            ripple: "Kräuseln",
+            aurora: "Polarlicht",
+            classicRing: "Klassischer Ring",
         },
         avatarStyle: 'Avatar-Stil',
         avatarStyleDescription: 'Wähl das Aussehen der Session-Avatare',
@@ -6436,6 +6456,7 @@ export const de: TranslationStructure = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% übrig`,
+            badgeLabel: 'Kontext',
             windowTitle: 'Kontextfenster',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} Kontext genutzt`,
@@ -7838,11 +7859,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider-Nutzung',
-              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen.',
+              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen. Hefte ein Nutzungsfenster an einem verbundenen Konto an, um es als zusätzliche Anzeige zu zeigen.',
               visibilityTitle: 'Nutzungsanzeige des Providers zeigen',
               visibilityEnabledSubtitle: 'Das verbleibende Provider-Kontingent neben dem Composer zeigen, wenn verfügbar.',
               visibilityHiddenSubtitle: 'Das Provider-Kontingent im Composer ausblenden.',
               windowTitle: 'Anzeigefenster',
+              labelsTitle: 'Nutzungsbeschriftungen anzeigen',
+              labelsSubtitle: 'Kontext- und Anbieternutzung am Eingabefeld beschriften.',
               windowMostConstrainedTitle: 'Am stärksten begrenzt',
               windowMostConstrainedSubtitle: 'Das verlässliche Kontingentfenster mit dem geringsten Rest zeigen.',
               windowDailyTitle: 'Täglich',

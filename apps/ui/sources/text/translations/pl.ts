@@ -3628,6 +3628,8 @@ export const pl: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Wycisz telefon, gdy używasz komputera",
+        mutePhoneWhenComputerFocusedSubtitle: "Wycisz powiadomienia Gotowe i prośby, gdy dowolne okno Happier na komputerze ma fokus. Powiadomienia wracają, gdy żadne okno na komputerze nie ma fokusu.",
     badges: {
       title: 'Odznaki na tym urządzeniu',
       footer: 'Wybierz, które działania mają wpływać na odznakę ikony aplikacji na tym urządzeniu.',
@@ -4481,6 +4483,24 @@ export const pl: TranslationStructure = {
       auto: "Automatycznie",
       labels: "Etykiety",
       icons: "Tylko ikony",
+    },
+    loadingIndicator: "Wskaźnik ładowania",
+    loadingIndicatorStyle: "Styl",
+    loadingIndicatorDescription: "Jak wyglądają wskaźniki podczas trwającej pracy",
+    loadingIndicatorFooter: "Gdy włączone jest Ograniczenie ruchu, style kropkowe pozostają nieruchome i łagodnie przygasają, a Klasyczny pierścień przestaje się obracać.",
+    loadingIndicatorOptions: {
+      wave: "Fala",
+      handwritten: "Odręczny",
+      buildAndRelease: "Buduj i uwolnij",
+      relay: "Sztafeta",
+      twinStems: "Bliźniacze łodygi",
+      slowBreath: "Powolny oddech",
+      starfield: "Pole gwiazd",
+      sweep: "Omiatanie",
+      radar: "Radar",
+      ripple: "Zmarszczka",
+      aurora: "Zorza",
+      classicRing: "Klasyczny pierścień",
     },
     avatarStyle: "Styl awatara",
     avatarStyleDescription: "Wybierz wygląd awatara sesji",
@@ -6839,6 +6859,7 @@ export const pl: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `Pozostało ${percent}%`,
+      badgeLabel: "Kontekst",
       windowTitle: "Okno kontekstu",
       usedDetail: ({
         percent,
@@ -8293,12 +8314,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Użycie dostawcy",
         footer:
-          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy.",
+          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy. Przypnij okno użycia na połączonym koncie, aby pokazać je jako dodatkowy wskaźnik.",
         visibilityTitle: "Pokaż wskaźnik użycia dostawcy",
         visibilityEnabledSubtitle:
           "Pokazuj pozostały limit dostawcy obok pola wpisywania, gdy jest dostępny.",
         visibilityHiddenSubtitle: "Ukryj limit dostawcy przy polu wpisywania.",
         windowTitle: "Okno wskaźnika",
+        labelsTitle: 'Pokaż etykiety użycia',
+        labelsSubtitle: 'Wyświetlaj etykiety wskaźników kontekstu i dostawcy.',
         windowMostConstrainedTitle: "Najbardziej ograniczone",
         windowMostConstrainedSubtitle:
           "Pokazuj wiarygodne okno limitu z najmniejszym pozostałym limitem.",

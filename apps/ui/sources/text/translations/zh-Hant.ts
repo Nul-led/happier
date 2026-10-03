@@ -3274,6 +3274,8 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
 		    },
 
 		    settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "電腦視窗取得焦點時靜音手機通知",
+        mutePhoneWhenComputerFocusedSubtitle: "任一電腦上的 Happier 視窗取得焦點時，不傳送就緒和請求推播通知。所有電腦視窗都失去焦點後恢復通知。",
 		        badges: {
 		            title: '此裝置的徽章',
 		            footer: '選擇哪些活動會影響此裝置的 App 圖示徽章。',
@@ -4060,6 +4062,24 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         wrapLinesInDiffsDescription: '在程式碼預覽和編輯器中自動換行顯示長行，而不是水平捲動',
         alwaysShowContextSize: '始終顯示上下文大小',
         alwaysShowContextSizeDescription: '即使未接近限制時也顯示上下文使用情況',
+        loadingIndicator: "載入指示器",
+        loadingIndicatorStyle: "樣式",
+        loadingIndicatorDescription: "工作進行時指示器的樣子",
+        loadingIndicatorFooter: "開啟「減少動態效果」後，圓點樣式保持靜止並輕柔地淡入淡出，經典圓環則停止旋轉。",
+        loadingIndicatorOptions: {
+            wave: "波浪",
+            handwritten: "手寫",
+            buildAndRelease: "建構與釋放",
+            relay: "接力",
+            twinStems: "雙莖",
+            slowBreath: "緩慢呼吸",
+            starfield: "星空",
+            sweep: "掃掠",
+            radar: "雷達",
+            ripple: "漣漪",
+            aurora: "極光",
+            classicRing: "經典圓環",
+        },
         avatarStyle: '頭像風格',
         avatarStyleDescription: '選擇工作階段頭像外觀',
         avatarOptions: {
@@ -5690,6 +5710,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `剩餘 ${percent}%`,
+            badgeLabel: '上下文',
             windowTitle: '上下文視窗',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • 已使用 ${used}/${total} 上下文`,
@@ -6978,11 +6999,13 @@ settingsSession: {
         },
         providerUsageGauge: {
             title: '提供者使用量',
-            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。',
+            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。在已連結的帳戶中釘選一個使用量視窗，即可將其顯示為額外的儀表。',
             visibilityTitle: '顯示提供者使用量儀表',
             visibilityEnabledSubtitle: '可用時在輸入框旁顯示提供者剩餘配額。',
             visibilityHiddenSubtitle: '在輸入框旁隱藏提供者配額。',
             windowTitle: '儀表視窗',
+            labelsTitle: '顯示用量標籤',
+            labelsSubtitle: '為上下文和提供者用量儀表顯示標籤。',
             windowMostConstrainedTitle: '最受限制',
             windowMostConstrainedSubtitle: '顯示可靠配額視窗中剩餘最少的視窗。',
             windowDailyTitle: '每日',

@@ -3720,6 +3720,8 @@ export const pt: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silenciar o telefone ao usar o computador",
+        mutePhoneWhenComputerFocusedSubtitle: "Silencia as notificações de pronto e as solicitações enquanto alguma janela do Happier num computador estiver em foco. As notificações são retomadas quando nenhuma janela num computador estiver em foco.",
     badges: {
       title: 'Badges neste dispositivo',
       footer: 'Escolha quais atividades contribuem para o badge do ícone do app neste dispositivo.',
@@ -4573,6 +4575,24 @@ export const pt: TranslationStructure = {
       auto: "Automático",
       labels: "Rótulos",
       icons: "Somente ícones",
+    },
+    loadingIndicator: "Indicador de carregamento",
+    loadingIndicatorStyle: "Estilo",
+    loadingIndicatorDescription: "Como os indicadores aparecem enquanto há trabalho em andamento",
+    loadingIndicatorFooter: "Com Reduzir movimento ativado, os estilos de pontos ficam parados e esmaecem suavemente, e o Anel clássico para de girar.",
+    loadingIndicatorOptions: {
+      wave: "Onda",
+      handwritten: "Manuscrito",
+      buildAndRelease: "Construir e soltar",
+      relay: "Revezamento",
+      twinStems: "Hastes gêmeas",
+      slowBreath: "Respiração lenta",
+      starfield: "Campo estelar",
+      sweep: "Varredura",
+      radar: "Radar",
+      ripple: "Ondulação",
+      aurora: "Aurora",
+      classicRing: "Anel clássico",
     },
     avatarStyle: "Estilo do avatar",
     avatarStyleDescription: "Escolha a aparência do avatar da sessão",
@@ -6950,6 +6970,7 @@ export const pt: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contexto",
       windowTitle: "Janela de contexto",
       usedDetail: ({
         percent,
@@ -8411,12 +8432,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso do provedor",
         footer:
-          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor.",
+          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor. Fixe uma janela de uso numa conta conectada para mostrá-la como indicador adicional.",
         visibilityTitle: "Mostrar medidor de uso do provedor",
         visibilityEnabledSubtitle:
           "Mostra a cota restante do provedor ao lado do compositor quando disponível.",
         visibilityHiddenSubtitle: "Oculta a cota do provedor no compositor.",
         windowTitle: "Janela do medidor",
+        labelsTitle: 'Mostrar etiquetas de uso',
+        labelsSubtitle: 'Identificar os indicadores de contexto e do provedor.',
         windowMostConstrainedTitle: "Mais limitada",
         windowMostConstrainedSubtitle:
           "Mostra a janela de cota confiável com menos cota restante.",

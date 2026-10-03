@@ -3941,6 +3941,8 @@ export const it: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silenzia il telefono quando il computer è attivo",
+        mutePhoneWhenComputerFocusedSubtitle: "Silenzia le notifiche Pronto e le richieste mentre una finestra di Happier su un computer ha il focus. Riprendono quando nessuna finestra su computer ha il focus.",
     badges: {
       title: "Badge su questo dispositivo",
       footer:
@@ -4794,6 +4796,24 @@ export const it: TranslationStructure = {
       auto: "Automatico",
       labels: "Etichette",
       icons: "Solo icone",
+    },
+    loadingIndicator: "Indicatore di caricamento",
+    loadingIndicatorStyle: "Stile",
+    loadingIndicatorDescription: "Come appaiono gli indicatori mentre il lavoro è in corso",
+    loadingIndicatorFooter: "Con Riduci movimento attivo, gli stili a punti restano fermi e sfumano dolcemente, e l'Anello classico smette di girare.",
+    loadingIndicatorOptions: {
+      wave: "Onda",
+      handwritten: "Scritto a mano",
+      buildAndRelease: "Costruisci e rilascia",
+      relay: "Staffetta",
+      twinStems: "Steli gemelli",
+      slowBreath: "Respiro lento",
+      starfield: "Campo stellare",
+      sweep: "Scansione",
+      radar: "Radar",
+      ripple: "Increspatura",
+      aurora: "Aurora",
+      classicRing: "Anello classico",
     },
     avatarStyle: "Stile avatar",
     avatarStyleDescription: "Scegli l'aspetto dell'avatar di sessione",
@@ -7161,6 +7181,7 @@ export const it: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contesto",
       windowTitle: "Finestra di contesto",
       usedDetail: ({
         percent,
@@ -8621,12 +8642,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del provider",
         footer:
-          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider.",
+          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider. Fissa una finestra di utilizzo su un account collegato per mostrarla come indicatore aggiuntivo.",
         visibilityTitle: "Mostra l'indicatore di uso del provider",
         visibilityEnabledSubtitle:
           "Mostra la quota restante del provider accanto al compositore quando disponibile.",
         visibilityHiddenSubtitle: "Nascondi la quota del provider dal compositore.",
         windowTitle: "Finestra dell'indicatore",
+        labelsTitle: 'Mostra le etichette di utilizzo',
+        labelsSubtitle: 'Etichetta gli indicatori di contesto e del provider.',
         windowMostConstrainedTitle: "Più vincolata",
         windowMostConstrainedSubtitle:
           "Mostra la finestra di quota affidabile con meno quota restante.",

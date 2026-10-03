@@ -14,7 +14,7 @@ const readCredentialsMock = vi.hoisted(() => vi.fn<() => Promise<Credentials | n
 const readSettingsMock = vi.hoisted(() => vi.fn<() => Promise<Partial<Settings>>>(async () => ({})));
 const clearCredentialsMock = vi.hoisted(() => vi.fn(async () => {}));
 const clearMachineIdMock = vi.hoisted(() => vi.fn(async () => {}));
-const stopDaemonMock = vi.hoisted(() => vi.fn(async () => {}));
+const stopDaemonMock = vi.hoisted(() => vi.fn(async () => ({ status: 'not_running' as const })));
 const reconcileBackgroundServicesMock = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock('@/ui/auth', () => ({
@@ -89,6 +89,7 @@ describe('happier auth login', () => {
     clearCredentialsMock.mockReset();
     clearMachineIdMock.mockReset();
     stopDaemonMock.mockReset();
+    stopDaemonMock.mockResolvedValue({ status: 'not_running' });
     reconcileBackgroundServicesMock.mockReset();
     reconcileBackgroundServicesMock.mockResolvedValue(true);
     process.exitCode = undefined;
@@ -188,7 +189,7 @@ describe('happier auth login', () => {
       const { handleAuthLogin } = await import('./login');
       await handleAuthLogin([]);
       const output = consoleSpy.mock.calls.flat().map(String).join('\n');
-      expect(output.match(/Authentication successful/gu) ?? []).toHaveLength(1);
+      expect(output.match(/✓ Signed in$/gmu) ?? []).toHaveLength(1);
     } finally {
       consoleSpy.mockRestore();
     }
