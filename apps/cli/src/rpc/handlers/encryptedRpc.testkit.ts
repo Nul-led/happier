@@ -1,6 +1,7 @@
 import { decodeBase64, decrypt, encodeBase64, encrypt } from '@/api/encryption';
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
 import type { RpcRequest } from '@/api/rpc/types';
+import { socketRpcCodec, type SocketRpcContent } from '@happier-dev/sync-client';
 
 type EncryptionVariant = 'legacy';
 
@@ -32,16 +33,29 @@ export function createEncryptedRpcTestClient(
   });
   options.registerHandlers(manager);
   let requestSequence = 0;
+  const content = {
+    mode: 'e2ee',
+    cipher: {
+      async encryptRaw(value: unknown) {
+        return encodeBase64(encrypt(encryptionKey, encryptionVariant, value));
+      },
+      async decryptRaw(ciphertext: string) {
+        return decrypt(encryptionKey, encryptionVariant, decodeBase64(ciphertext));
+      },
+    },
+  } satisfies SocketRpcContent;
 
   const call = async <TResponse, TRequest>(method: string, request: TRequest): Promise<TResponse> => {
-    const encryptedParams = encodeBase64(encrypt(encryptionKey, encryptionVariant, request));
+    const boundMethod = `${options.scopePrefix}:${method}`;
+    const callId = (++requestSequence).toString(16).padStart(32, '0');
+    const encryptedParams = await socketRpcCodec.encodeParams(content, request, { method: boundMethod, callId });
     const rpcRequest: RpcRequest = {
-      method: `${options.scopePrefix}:${method}`,
+      method: boundMethod,
       params: encryptedParams,
-      requestId: `${options.scopePrefix}:test-request:${++requestSequence}`,
+      requestId: `${options.scopePrefix}:test-request:${requestSequence}`,
     };
     const encryptedResponse = await manager.handleRequest(rpcRequest);
-    return decrypt(encryptionKey, encryptionVariant, decodeBase64(encryptedResponse)) as TResponse;
+    return await socketRpcCodec.decodeResult(content, { ok: true, result: encryptedResponse }, callId) as TResponse;
   };
 
   return { manager, call };
