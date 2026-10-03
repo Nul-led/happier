@@ -1,5 +1,5 @@
 import { onShutdown } from "@/utils/process/shutdown";
-import { registerUiFocusSocketEvent } from './socket/registerUiFocusSocketEvent';
+import { registerUiFocusSocketEvent } from '@/app/api/socket/registerUiFocusSocketEvent';
 import { Fastify } from "./types";
 import { buildMachineActivityEphemeral, buildSessionActivityEphemeral, buildUpdateSessionUpdate, ClientConnection, eventRouter } from "@/app/events/eventRouter";
 import { CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT } from "@/app/events/socketRoomEmitter";

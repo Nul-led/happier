@@ -5564,6 +5564,7 @@ class Sync {
             changedMessageIds = this.applyMessages(sessionId, normalizedMessages, {
                 notifyVoice: false,
                 notifyActivity: true,
+                activitySource: 'reconciliation',
                 replaceExisting: options?.replaceExisting === true,
             }).changed;
         }
@@ -8690,7 +8691,7 @@ class Sync {
                 { allowHasMoreInference: true, deferHistoryStartCoverage: true },
             );
         }
-        this.applyMessages(session.id, boundedMessages, { replaceExisting: true });
+        this.applyMessages(session.id, boundedMessages, { replaceExisting: true, activitySource: 'reconciliation' });
         this.publishSessionMessagesHistoryStartCoverage(session.id);
         this.transcriptAuthorityKeyBySessionId.set(session.id, authorityKey);
         this.externalSessionTranscriptFenceAuthorityKeyBySessionId.delete(session.id);
@@ -8891,7 +8892,7 @@ class Sync {
                   isSessionKnown: (id) => this.isSessionKnownOnResolvedOwnerServer(id),
                   request: requestMessages,
                   sessionReceivedMessages: this.sessionReceivedMessages,
-                  applyMessages: (sid, messages) => this.applyMessages(sid, messages),
+                  applyMessages: (sid, messages) => this.applyMessages(sid, messages, { activitySource: 'reconciliation' }),
                   onTaskLifecycleEvent: (event) => this.applySessionThinkingFromTaskLifecycle(sessionId, event),
                   markMessagesLoaded: (sid) => {
                       this.publishSessionMessagesHistoryStartCoverage(sid);
@@ -8969,7 +8970,7 @@ class Sync {
                       request: requestMessages,
                       sessionReceivedMessages: this.sessionReceivedMessages,
                       applyMessages: (sid, messages) => {
-                          if (isCatchUpSessionCurrent()) this.applyMessages(sid, messages);
+                          if (isCatchUpSessionCurrent()) this.applyMessages(sid, messages, { activitySource: 'reconciliation' });
                       },
                       onNormalizedMessages: (messages) => {
                           if (isCatchUpSessionCurrent()) ingestWorkspaceMutationMessages(sessionId, messages, pageServerId);
@@ -9013,7 +9014,7 @@ class Sync {
                       request: requestMessages,
                       sessionReceivedMessages: this.sessionReceivedMessages,
                       applyMessages: (sid, messages) => {
-                          if (isCatchUpSessionCurrent()) this.applyMessages(sid, messages);
+                          if (isCatchUpSessionCurrent()) this.applyMessages(sid, messages, { activitySource: 'reconciliation' });
                       },
                       onTaskLifecycleEvent: (event) => {
                           if (isCatchUpSessionCurrent()) this.applySessionThinkingFromTaskLifecycle(sessionId, event);
@@ -11841,7 +11842,7 @@ class Sync {
     private applyMessages = (
         sessionId: string,
         messages: NormalizedMessage[],
-        options?: { notifyVoice?: boolean; notifyActivity?: boolean; replaceExisting?: boolean }
+        options?: { notifyVoice?: boolean; notifyActivity?: boolean; replaceExisting?: boolean; activitySource?: 'reconciliation' }
     ) => {
         const session = storage.getState().sessions[sessionId] ?? null;
         const notificationAddress = normalizeSessionAddress(session?.serverId, sessionId);
@@ -11920,7 +11921,7 @@ class Sync {
                     notifyActivityReady({
                         serverId: notificationAddress.serverId,
                         sessionId,
-                    }, m, committedSequence, m.find((message) => message.seq === latestReadyEventSeq)?.localId ?? undefined);
+                    }, m, committedSequence, m.find((message) => message.seq === latestReadyEventSeq)?.localId ?? undefined, options?.activitySource);
                 }
             }
         }

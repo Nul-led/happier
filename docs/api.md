@@ -1466,6 +1466,8 @@ Account policy projection, even when Home OS alerts are disabled.
 Muted Home tokens still receive the content-free `SessionChangedWakeV1` data wake
 with optional `alert: 'muted'`. The device reconciles that wake silently through
 `ActivityLocalNotificationRuntime`; ordinary wakes retain existing behavior.
+Only reconciliation-produced notifications are muted; independent live socket
+alerts are not discarded while that reconciliation is pending.
 This qualifier is undeployed v0.3 wire behavior, not a released compatibility shim.
 
 ### Connect (OAuth providers + vendor tokens)

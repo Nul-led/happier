@@ -1,6 +1,6 @@
 import type { Socket } from "socket.io";
 import { describe, expect, it, vi } from "vitest";
-import { registerUiFocusSocketEvent } from "./registerUiFocusSocketEvent";
+import { registerUiFocusSocketEvent } from "@/app/api/socket/registerUiFocusSocketEvent";
 
 describe("ui-focus admission", () => {
     it.each(["ready", "revoked", "disconnected"] as const)("waits for final authentication admission: %s", async (outcome) => {

@@ -137,7 +137,8 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
 
     React.useEffect(() => {
         return subscribeActivityLocalNotifications((event) => {
-            if (isActivityLocalNotificationMutedForWake(event.address)) return;
+            if (event.kind === 'ready' && event.source === 'reconciliation'
+                && isActivityLocalNotificationMutedForWake(event.address)) return;
             const state = storage.getState();
             const directSession = state.sessions[event.address.sessionId];
             const directServerId = typeof directSession?.serverId === 'string' ? directSession.serverId.trim() : '';

@@ -22,6 +22,7 @@ export type ActivityLocalNotificationEvent =
         messages?: Message[];
         committedSequence?: ActivitySequenceEventReferenceV1;
         committedLocalId?: string;
+        source?: 'reconciliation';
     }>
     | Readonly<{
         kind: 'agent-request';
@@ -86,6 +87,7 @@ export function notifyActivityReady(
     messages?: Message[],
     committedSequence?: ActivitySequenceEventReferenceV1,
     committedLocalId?: string,
+    source?: 'reconciliation',
 ): void {
     const address = normalizeSessionAddress(addressInput.serverId, addressInput.sessionId);
     if (!address) return;
@@ -97,6 +99,7 @@ export function notifyActivityReady(
         messages,
         ...(committedSequence ? { committedSequence } : {}),
         ...(committedLocalId ? { committedLocalId } : {}),
+        ...(source ? { source } : {}),
     };
 
     publish(event);
