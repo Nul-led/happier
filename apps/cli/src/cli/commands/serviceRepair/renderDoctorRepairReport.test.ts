@@ -224,7 +224,7 @@ describe('renderDoctorRepairReport — authentication evidence', () => {
         {
           serverId: 'cloud', serverName: 'Cloud', serverUrl: 'https://api.happier.dev',
           hasCredentials: true, isExpired: false, machineRegistered: true,
-          credentialEvidence: 'active-store',
+          credentialEvidence: 'inspected-store',
           isActive: true, reachability: 'unreachable',
         },
       ],
@@ -263,7 +263,7 @@ describe('renderDoctorRepairReport — authentication evidence', () => {
         {
           serverId: 'cloud', serverName: 'Cloud', serverUrl: 'https://api.happier.dev',
           hasCredentials: true, isExpired: false, machineRegistered: true,
-          credentialEvidence: 'active-store',
+          credentialEvidence: 'inspected-store',
           isActive: true, reachability: 'verified',
         },
         {
