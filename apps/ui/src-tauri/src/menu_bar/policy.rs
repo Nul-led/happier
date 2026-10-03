@@ -113,9 +113,132 @@ fn pointer_refresh_is_due(since_last_refresh: Option<Duration>) -> bool {
 /// cadence that still lets the menu catch a daemon that stopped on its own within a minute.
 pub const LINUX_STATUS_TIMER_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Whether to start a native status read now. While the web UI runs it pushes the rows itself, so
-/// the native side reads only in menu-bar mode; one read at a time.
-pub fn should_start_status_read(
+/// The single native reader's admission and settlement while tray-only. An overlapping action
+/// retains one follow-up read; pointer and timer demand never queue another read.
+#[derive(Default)]
+pub struct StatusReadState {
+    read_in_flight: bool,
+    pending_after_action: bool,
+}
+
+impl StatusReadState {
+    pub fn request(
+        &mut self,
+        trigger: StatusReadTrigger,
+        menu_bar_mode: bool,
+        since_last_read: Option<Duration>,
+        last_read_failed: bool,
+    ) -> bool {
+        if !menu_bar_mode {
+            self.leave();
+            return false;
+        }
+        if self.read_in_flight && trigger == StatusReadTrigger::AfterAction {
+            self.pending_after_action = true;
+        }
+        if !should_start_status_read(
+            trigger,
+            menu_bar_mode,
+            self.read_in_flight,
+            since_last_read,
+            last_read_failed,
+        ) {
+            return false;
+        }
+        self.read_in_flight = true;
+        true
+    }
+
+    /// Returns whether the worker has another read to perform.
+    pub fn finish(&mut self, menu_bar_mode: bool) -> bool {
+        let pending = std::mem::take(&mut self.pending_after_action);
+        self.read_in_flight = menu_bar_mode && pending;
+        self.read_in_flight
+    }
+
+    pub fn leave(&mut self) {
+        self.pending_after_action = false;
+    }
+}
+
+#[cfg(test)]
+mod status_read_tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_actions_retain_one_unthrottled_read_after_the_old_read_settles() {
+        for last_read_failed in [false, true] {
+            let mut reads = StatusReadState::default();
+            assert!(reads.request(StatusReadTrigger::TrayPointer, true, None, false));
+            for _ in 0..2 {
+                assert!(!reads.request(
+                    StatusReadTrigger::AfterAction,
+                    true,
+                    Some(Duration::ZERO),
+                    false
+                ));
+            }
+            assert!(!reads.request(StatusReadTrigger::Timer, true, None, false));
+            assert!(
+                reads.finish(true),
+                "the completed action still needs a fresh observation"
+            );
+            assert!(!reads.request(StatusReadTrigger::TrayPointer, true, None, last_read_failed));
+            assert!(
+                !reads.finish(true),
+                "the coalesced obligation is consumed exactly once"
+            );
+            assert!(reads.request(
+                StatusReadTrigger::AfterAction,
+                true,
+                Some(Duration::ZERO),
+                last_read_failed
+            ));
+        }
+    }
+
+    #[test]
+    fn leaving_tray_only_clears_and_ignores_action_obligations() {
+        let mut reads = StatusReadState::default();
+        assert!(reads.request(StatusReadTrigger::TrayPointer, true, None, false));
+        assert!(!reads.request(StatusReadTrigger::AfterAction, true, None, false));
+        reads.leave();
+        assert!(!reads.request(StatusReadTrigger::AfterAction, false, None, false));
+        assert!(
+            !reads.finish(true),
+            "reopening tray-only must not restore the abandoned obligation"
+        );
+
+        assert!(reads.request(StatusReadTrigger::EnteredMenuBar, true, None, false));
+        assert!(!reads.request(StatusReadTrigger::AfterAction, true, None, false));
+        assert!(!reads.finish(false));
+        assert!(!reads.finish(true));
+    }
+
+    #[test]
+    fn ordinary_pointer_and_timer_overlap_does_not_queue_a_read() {
+        let mut reads = StatusReadState::default();
+        assert!(reads.request(StatusReadTrigger::EnteredMenuBar, true, None, false));
+        assert!(!reads.request(StatusReadTrigger::TrayPointer, true, None, false));
+        assert!(!reads.request(StatusReadTrigger::Timer, true, None, false));
+        assert!(!reads.finish(true));
+        assert!(!reads.request(
+            StatusReadTrigger::TrayPointer,
+            true,
+            Some(Duration::ZERO),
+            false
+        ));
+        assert!(reads.request(
+            StatusReadTrigger::TrayPointer,
+            true,
+            Some(Duration::ZERO),
+            true
+        ));
+        assert!(!reads.finish(true));
+    }
+}
+
+fn should_start_status_read(
     trigger: StatusReadTrigger,
     menu_bar_mode: bool,
     read_in_flight: bool,

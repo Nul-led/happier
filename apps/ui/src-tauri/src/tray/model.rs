@@ -18,6 +18,81 @@ use crate::menu::ids::{
     STOP_SERVICES_AND_QUIT_MENU_ID, TOGGLE_START_AT_LOGIN_MENU_ID,
 };
 
+/// The tray's platform theme; macOS instead uses AppKit's template tint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayThemeSignal {
+    /// Windows system/taskbar mode, independent of AppsUseLightTheme; None is unknown.
+    WindowsSystemUsesLightTheme(Option<u32>),
+    /// Freedesktop portal color-scheme: 1 dark, 2 light, anything else unknown.
+    FreedesktopColorScheme(Option<u32>),
+}
+
+/// Unknown tray themes use the existing white silhouette.
+pub fn tray_is_light(signal: TrayThemeSignal) -> bool {
+    match signal {
+        TrayThemeSignal::WindowsSystemUsesLightTheme(value) => {
+            value.is_some_and(|value| value != 0)
+        }
+        TrayThemeSignal::FreedesktopColorScheme(value) => value == Some(2),
+    }
+}
+
+/// Windows loses its window-owned theme events while tray-only. Sample on existing demand.
+pub fn sample_tray_theme_on_pointer(
+    platform: MenuPlatform,
+    main_webview_exists: bool,
+    sample: impl FnOnce() -> TrayThemeSignal,
+) -> Option<TrayThemeSignal> {
+    (platform == MenuPlatform::Windows && !main_webview_exists).then(sample)
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn tray_only_windows_pointer_samples_current_theme_without_a_window_observer() {
+        // The sampler substitutes only the Windows registry boundary, including changed/unknown mode.
+        let system_theme = std::cell::Cell::new(Some(1));
+        for (mode, expected_light) in [(Some(1), true), (Some(0), false), (None, false)] {
+            system_theme.set(mode);
+            let sampled = sample_tray_theme_on_pointer(MenuPlatform::Windows, false, || {
+                TrayThemeSignal::WindowsSystemUsesLightTheme(system_theme.get())
+            });
+            assert_eq!(sampled.map(tray_is_light), Some(expected_light));
+        }
+    }
+
+    #[test]
+    fn pointer_keeps_window_and_non_windows_theme_observers() {
+        for (platform, main_exists) in [
+            (MenuPlatform::Windows, true),
+            (MenuPlatform::MacOs, false),
+            (MenuPlatform::Linux, false),
+        ] {
+            assert_eq!(
+                sample_tray_theme_on_pointer(platform, main_exists, || {
+                    panic!("the existing observer owns theme here")
+                }),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn tray_icon_follows_the_tray_theme_and_unknown_means_a_dark_tray() {
+        use TrayThemeSignal::*;
+        assert!(tray_is_light(WindowsSystemUsesLightTheme(Some(1))));
+        assert!(!tray_is_light(WindowsSystemUsesLightTheme(Some(0))));
+        assert!(!tray_is_light(WindowsSystemUsesLightTheme(None)));
+        assert!(tray_is_light(FreedesktopColorScheme(Some(2))));
+        assert!(!tray_is_light(FreedesktopColorScheme(Some(1))));
+        assert!(!tray_is_light(FreedesktopColorScheme(Some(0))));
+        assert!(!tray_is_light(FreedesktopColorScheme(Some(7))));
+        assert!(!tray_is_light(FreedesktopColorScheme(None)));
+    }
+}
+
 /// How a background service here stands for its relay — the web UI's `ThisComputerRelayState`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
