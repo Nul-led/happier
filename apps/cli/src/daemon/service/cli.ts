@@ -60,6 +60,8 @@ import { resolveInvokerName } from '@/cli/runtime/resolveInvokerName';
 import { discoverInstalledDaemonServiceEntries } from './discoverInstalledDaemonServiceEntries';
 import {
   isValidInstalledDaemonServiceFile,
+  isInstalledDaemonServiceForHappierHome,
+  resolveInstalledDaemonServiceDefinitionPath,
   readInstalledDaemonServiceAutostartMode,
   readInstalledDaemonServiceBundleId,
   readInstalledDaemonServiceManagedBy,
@@ -467,6 +469,25 @@ function resolveDaemonServiceStatusCommand(params: Readonly<{
     uid: params.runtime.uid ?? undefined,
   });
   return plan.commands[0] ?? null;
+}
+
+function assertDaemonServiceDefinitionHome(
+  runtime: DaemonServiceCliRuntime,
+  paths: ReturnType<typeof resolveDaemonServicePaths>,
+  action: 'start' | 'stop' | 'restart' | 'uninstall',
+): string {
+  const path = resolveInstalledDaemonServiceDefinitionPath({
+    platform: runtime.platform, path: paths.installedPath, taskName: paths.taskName,
+  });
+  const definition = { platform: runtime.platform, path, expectedLabel: paths.label };
+  const hasRegisteredWindowsWrapper = runtime.platform === 'win32' && path !== paths.installedPath;
+  if ((isValidInstalledDaemonServiceFile(definition) || hasRegisteredWindowsWrapper)
+    && !isInstalledDaemonServiceForHappierHome({ ...definition, happierHomeDir: runtime.happierHomeDir })) {
+    throw Object.assign(new Error(
+      `foreign_home_service: Background service ${paths.label} belongs to another or unknown Happier home; refusing to ${action} it.`,
+    ), { code: 'foreign_home_service' });
+  }
+  return path;
 }
 
 function resolveDaemonServiceOwnershipHealthCommand(params: Readonly<{
@@ -904,25 +925,27 @@ export function resolveDaemonServiceInstallationSnapshotFromEnv(options: Readonl
 }> = {}): DaemonServiceInstallationSnapshot {
   const runtime = resolveDaemonServiceCliRuntimeFromEnv(options);
   const paths = resolveDaemonServicePaths(runtime, { mode: options.mode });
-  const installed = isValidInstalledDaemonServiceFile({
+  const installedPath = resolveInstalledDaemonServiceDefinitionPath({ platform: runtime.platform, path: paths.installedPath, taskName: paths.taskName });
+  const installed = isInstalledDaemonServiceForHappierHome({
     platform: runtime.platform,
-    path: paths.installedPath,
+    path: installedPath,
     expectedLabel: paths.label,
+    happierHomeDir: runtime.happierHomeDir,
   });
   return {
     platform: runtime.platform,
     installed,
     installedPath: paths.installedPath,
     label: paths.label,
-    targetMode: readInstalledDaemonServiceTargetMode({
+    targetMode: installed ? readInstalledDaemonServiceTargetMode({
       platform: runtime.platform,
-      path: paths.installedPath,
-    }),
+      path: installedPath,
+    }) : null,
     // A file that is not a readable Happier definition proves no mode, so it contributes none.
     autostart: installed
       ? readInstalledDaemonServiceAutostartMode({
         platform: runtime.platform,
-        path: paths.installedPath,
+        path: installedPath,
       })
       : null,
   };
@@ -1385,6 +1408,11 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
         '  happier service logs [--json]',
         '  happier service tail',
         '',
+        'Pinned services:',
+        '  happier --server <profile-id> service install --instance <service-id> [--autostart <at-login|on-demand>]',
+        '  --instance names the service; --server selects its relay and must precede service.',
+        '  Use the same --server and --instance when inspecting or controlling that service.',
+        '',
         'Autostart:',
         '  --no-autostart installs the background service without a login trigger, so the',
         '  daemon runs only while something starts it (the desktop app, or `happier service start`).',
@@ -1842,6 +1870,7 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       return;
     }
 
+    assertDaemonServiceDefinitionHome(runtime, paths, 'uninstall');
     const plan = planDaemonServiceUninstall({
       platform: runtime.platform,
       mode,
@@ -1897,9 +1926,10 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
       }
     }
 
+    const installedDefinitionPath = assertDaemonServiceDefinitionHome(runtime, paths, action);
     if (!isValidInstalledDaemonServiceFile({
       platform: runtime.platform,
-      path: paths.installedPath,
+      path: installedDefinitionPath,
       expectedLabel: paths.label,
     })) {
       const msg = `Background service is not installed (${paths.installedPath}). Run: happier service install`;
@@ -2241,10 +2271,12 @@ export async function runDaemonServiceCliCommand(params: Readonly<{
   }
 
   if (action === 'status') {
-    const installed = isValidInstalledDaemonServiceFile({
+    const installedDefinitionPath = resolveInstalledDaemonServiceDefinitionPath({ platform: runtime.platform, path: paths.installedPath, taskName: paths.taskName });
+    const installed = isInstalledDaemonServiceForHappierHome({
       platform: runtime.platform,
-      path: paths.installedPath,
+      path: installedDefinitionPath,
       expectedLabel: paths.label,
+      happierHomeDir: runtime.happierHomeDir,
     });
     const ownership = await evaluateCurrentDaemonOwner();
     const services = await resolveInstalledDaemonServiceInventoryForCurrentRelay(runtime);

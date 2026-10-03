@@ -81,6 +81,7 @@ function writeValidInstalledDaemonServiceFile(
       description: 'Happier Daemon',
       execStart: ['/Users/tester/.happier/cli/current/happier', 'daemon', 'start-sync'],
       env: {
+        HAPPIER_HOME_DIR: process.env.HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR ?? process.env.HAPPIER_HOME_DIR ?? '',
         HAPPIER_DAEMON_STARTUP_SOURCE: 'background-service',
         HAPPIER_DAEMON_SERVICE_TARGET_MODE: options.targetMode ?? 'default-following',
         HAPPIER_ACTIVE_SERVER_ID: options.activeServerId ?? 'cloud',

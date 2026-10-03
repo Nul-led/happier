@@ -504,7 +504,7 @@ async function applyManagedServiceChanges(
   for (const service of targets) {
     signal.throwIfAborted();
     if (change.action === 'autostart' && !service.status.serviceInstalled) continue;
-    if (change.action === 'stop' && !service.status.serviceInstalled && !service.status.daemonRunning) continue;
+    if (change.action === 'stop' && !service.status.serviceInstalled) continue;
     const scoped = { ...service.invocation, signal };
     let commandFailure: ReturnType<typeof describeFailure> | null = null;
     try {

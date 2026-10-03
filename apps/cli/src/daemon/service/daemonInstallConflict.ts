@@ -3,7 +3,7 @@ import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRi
 
 import type { InstalledDaemonServiceEntry } from './discoverInstalledDaemonServiceEntries';
 import type { DaemonServiceMode, DaemonServiceTargetMode } from './plan';
-import { resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
+import { happierHomeDirsMatch, resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
 
 export type DaemonServiceInstallStrategy = 'require-explicit' | 'add' | 'replace-ring' | 'replace-all';
 
@@ -49,7 +49,7 @@ export function daemonServiceMatchesInstallTarget(service: InstalledDaemonServic
   if (service.targetMode !== target.targetMode) {
     return false;
   }
-  if (resolveHappierHomeDirComparableKey(service.happierHomeDir) !== resolveHappierHomeDirComparableKey(target.happierHomeDir)) {
+  if (!happierHomeDirsMatch(service.happierHomeDir, target.happierHomeDir)) {
     return false;
   }
   if (target.targetMode === 'default-following') {
@@ -103,8 +103,7 @@ function resolveServiceRelay(
   }
   // A default-following service serves its own home's persisted active profile; only the
   // target home's is known here.
-  const sameHome = resolveHappierHomeDirComparableKey(service.happierHomeDir) !== null
-    && resolveHappierHomeDirComparableKey(service.happierHomeDir) === resolveHappierHomeDirComparableKey(target.happierHomeDir);
+  const sameHome = happierHomeDirsMatch(service.happierHomeDir, target.happierHomeDir);
   return sameHome ? target.defaultFollowingServer ?? null : null;
 }
 
@@ -150,12 +149,7 @@ export function daemonServiceRelaysMayMatch(left: DaemonServiceRelay, right: Dae
 }
 
 function isForeignHomeConflict(service: InstalledDaemonServiceEntry, target: DaemonServiceInstallTarget): boolean {
-  const serviceHomeDir = resolveHappierHomeDirComparableKey(service.happierHomeDir);
-  const targetHomeDir = resolveHappierHomeDirComparableKey(target.happierHomeDir);
-  if (serviceHomeDir === null || targetHomeDir === null) {
-    return true;
-  }
-  return serviceHomeDir !== targetHomeDir;
+  return !happierHomeDirsMatch(service.happierHomeDir, target.happierHomeDir);
 }
 
 function isReplaceAllAllowedForeignHomeCleanup(

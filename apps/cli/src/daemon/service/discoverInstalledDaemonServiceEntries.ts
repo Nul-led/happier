@@ -4,6 +4,7 @@ import { basename, join, win32 as win32Path } from 'node:path';
 
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 import { readPositiveIntEnv } from '@/utils/readPositiveIntEnv';
+import { happierHomeDirsMatch } from '@/daemon/ownership/happierHomeDirComparableKey';
 
 import {
   DAEMON_SERVICE_AUTOSTART_ENV_KEY,
@@ -358,6 +359,29 @@ export function isValidInstalledDaemonServiceFile(params: Readonly<{
   return contents ? isValidInstalledDaemonServiceDefinition(params, contents) : false;
 }
 
+/** Task names are global to the login, so its registered wrapper decides before a local file. */
+export function resolveInstalledDaemonServiceDefinitionPath(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32'; path: string; taskName: string;
+}>): string {
+  return params.platform === 'win32'
+    ? readWindowsScheduledTaskWrapperPath(params.taskName) ?? params.path
+    : params.path;
+}
+
+export function readInstalledDaemonServiceHomeDir(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32'; path: string;
+}>): string | null {
+  return readInstalledDaemonServiceEnvValue({ ...params, key: 'HAPPIER_HOME_DIR' })
+    ?? readInstalledDaemonServiceEnvValue({ ...params, key: 'HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR' });
+}
+
+export function isInstalledDaemonServiceForHappierHome(params: Readonly<{
+  platform: 'darwin' | 'linux' | 'win32'; path: string; expectedLabel: string; happierHomeDir: string;
+}>): boolean {
+  return isValidInstalledDaemonServiceFile(params)
+    && happierHomeDirsMatch(readInstalledDaemonServiceHomeDir(params), params.happierHomeDir);
+}
+
 function isValidInstalledDaemonServiceDefinition(params: Readonly<{
   platform: 'darwin' | 'linux' | 'win32';
   path: string;
@@ -532,7 +556,7 @@ function parseInstalledServiceMetadata(params: Readonly<{
   });
 
   const parsedServerId = readValue('HAPPIER_ACTIVE_SERVER_ID');
-  const parsedHappierHomeDir = readValue('HAPPIER_HOME_DIR') ?? readValue('HAPPIER_DAEMON_SERVICE_HAPPIER_HOME_DIR');
+  const parsedHappierHomeDir = readInstalledDaemonServiceHomeDir(params);
   const parsedRelayUrl = readValue('HAPPIER_PUBLIC_SERVER_URL') ?? readValue('HAPPIER_SERVER_URL');
   const parsedReleaseChannel = normalizeParsedReleaseChannel(readValue('HAPPIER_PUBLIC_RELEASE_CHANNEL'));
   return {

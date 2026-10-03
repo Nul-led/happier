@@ -37,7 +37,7 @@ import {
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import { doesInstalledDaemonServiceDefinitionMatchExpected } from './doesInstalledDaemonServiceDefinitionMatchExpected';
 import { describeDaemonServiceRuntimeReplacement } from './readDaemonServiceDefinitionLauncher';
-import { resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
+import { happierHomeDirsMatch } from '@/daemon/ownership/happierHomeDirComparableKey';
 import { getActiveServerProfile } from '@/server/serverProfiles';
 
 type SupportedPlatform = 'darwin' | 'linux' | 'win32';
@@ -365,8 +365,7 @@ function previewPlanFileForTarget(params: Readonly<{
  * service's definition names none). Only this CLI's own home can be read; any other is unknown.
  */
 async function resolveDefaultFollowingServerForHome(happierHomeDir: string): Promise<DaemonServiceRelay | null> {
-  const homeKey = resolveHappierHomeDirComparableKey(happierHomeDir);
-  if (homeKey === null || homeKey !== resolveHappierHomeDirComparableKey(configuration.happyHomeDir)) {
+  if (!happierHomeDirsMatch(happierHomeDir, configuration.happyHomeDir)) {
     return null;
   }
   try {

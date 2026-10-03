@@ -248,7 +248,13 @@ holding its `daemon.state.json` and `daemon.state.json.lock` — and only that s
 - **A service per relay is pinned.** `daemon service install` without `--instance`/`--ring` installs
   the single default-following service (an explicit `--server` only scopes that invocation); a relay
   gets its own service with `--server <id> … --instance <id>`, or through desktop setup's `pinned`
-  placement (`HAPPIER_DAEMON_SERVICE_TARGET_MODE=pinned`). `daemon status --all`
+  placement (`HAPPIER_DAEMON_SERVICE_TARGET_MODE=pinned`). For a terminal install, use
+  `happier --server <profile-id> service install --instance <service-id> --autostart on-demand --json`.
+  `--server` is a root prefix flag and selects the relay; `--instance` names the service and does
+  not select a profile. The service id may differ from the profile id. Address later service
+  status/start/stop/restart commands with the same prefix and instance. If the caller inherits a
+  `HAPPIER_DAEMON_LIFECYCLE_SCOPE_ID` for another relay, clear it first: the root profile selector
+  updates endpoint/profile selectors but not the inherited lifecycle scope. `daemon status --all`
   (`listDaemonStatusesForAllKnownServers`) reports for each relay the service that serves it: its
   pinned service, else — for the persisted selection only — the default-following one.
 - **Background-service repair** (`buildBackgroundServiceRepairPlan`, used by `service repair`,
@@ -510,6 +516,13 @@ definitions installed before that declaration existed). It is `null` when no rea
 proved a mode, and absent from CLIs that predate the field; neither may be read as
 `default-following`. "A service is installed" and "a service this app may repoint on its own" are
 different facts, and only `targetMode` separates them.
+
+In current development source, status attributes an installed service to this Happier home only
+when its definition declares the same home. A default label, systemd unit or scheduled-task name
+is global to the OS user and ring; finding that name alone does not establish ownership. Foreign
+or unknown homes report no installed service or autostart mode here, and targeted lifecycle
+commands fail with `foreign_home_service` before changing their definitions or OS jobs.
+The desktop's aggregate controls skip an uninstalled service even when a manual daemon is running.
 
 The same block carries `autostart` — `at-login` or `on-demand`, the CLI's own
 `DaemonServiceAutostartMode` vocabulary. One reader recovers it

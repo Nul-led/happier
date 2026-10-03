@@ -13,7 +13,7 @@ import { getReleaseRingCatalogEntry, type PublicReleaseRingId } from '@happier-d
 import { readDaemonStateForServerId } from '@/daemon/multiDaemon';
 import type { DaemonOwnerEvaluation } from '@/daemon/ownership/evaluateCurrentDaemonOwner';
 import { resolveDaemonStartupSourceServiceManagedState } from '@/daemon/ownership/daemonOwnershipMetadata';
-import { resolveHappierHomeDirComparableKey } from '@/daemon/ownership/happierHomeDirComparableKey';
+import { happierHomeDirsMatch } from '@/daemon/ownership/happierHomeDirComparableKey';
 import { resolveDaemonServiceCliRuntimeFromEnv } from '@/daemon/service/cli';
 import {
   discoverInstalledDaemonServiceEntries,
@@ -67,7 +67,6 @@ async function listUserServicesOfThisHomeAndRing(
   processEnv: NodeJS.ProcessEnv,
 ): Promise<InstalledDaemonServiceEntry[]> {
   const runtime = resolveDaemonServiceCliRuntimeFromEnv({ channel, processEnv });
-  const homeKey = resolveHappierHomeDirComparableKey(runtime.happierHomeDir);
   const entries = (await Promise.all(
     resolveDaemonServiceDiscoveryTargets({
       platform: runtime.platform,
@@ -87,8 +86,7 @@ async function listUserServicesOfThisHomeAndRing(
   return entries.filter((entry, index) =>
     entries.findIndex((other) => other.path === entry.path) === index
     && entry.releaseChannel === channel
-    && homeKey !== null
-    && resolveHappierHomeDirComparableKey(entry.happierHomeDir) === homeKey);
+    && happierHomeDirsMatch(entry.happierHomeDir, runtime.happierHomeDir));
 }
 
 async function observeServiceBeforeUpdate(
