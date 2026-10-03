@@ -78,7 +78,7 @@ export type SetupMachineRecipeExecutor = Readonly<{
   readAuthStatus: () => Promise<SetupMachineAuthStatus>;
   requestAuthPairing?: () => Promise<Readonly<{ publicKey: string } & Record<string, unknown>>>;
   waitForAuthPairing?: (publicKey: string) => Promise<Readonly<{ machineId: string | null }>>;
-  approveAuthPairing?: (publicKey: string) => Promise<void>;
+  approveAuthPairing?: (publicKey: string, requestPayload: Readonly<Record<string, unknown>>) => Promise<void>;
   enrollAuthPairing?: (params: Readonly<{
     approvePairingRequest?: (params: Readonly<{
       publicKey: string;
@@ -201,7 +201,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
 
     if (accountMatches && credentialState === 'valid' && machineRegistrationState !== 'server-confirmed') {
       if (params.executor.approveAuthPairing) {
-        await params.executor.approveAuthPairing(publicKey);
+        await params.executor.approveAuthPairing(publicKey, payload);
       } else if (params.approvePairingRequest) {
         await params.approvePairingRequest({ publicKey, requestPayload: payload });
       } else {

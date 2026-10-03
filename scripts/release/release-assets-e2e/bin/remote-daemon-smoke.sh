@@ -218,7 +218,7 @@ ensure_remote_auth_credentials() {
   HAPPIER_SERVER_URL="$HAPPIER_SERVER_URL" \
   HAPPIER_PUBLIC_SERVER_URL="$HAPPIER_PUBLIC_SERVER_URL" \
   HAPPIER_WEBAPP_URL="$HAPPIER_WEBAPP_URL" \
-  "${HAPPIER_PREFIX[@]}" auth approve --json --public-key "$remote_public_key" >/dev/null
+  printf '%s\n' "$remote_auth_request_json" | "${HAPPIER_PREFIX[@]}" auth approve --json --public-key "$remote_public_key" --request-json-stdin >/dev/null
 
   local remote_auth_wait_json=""
   remote_auth_wait_json="$(ssh "$REMOTE_SSH_TARGET" "HAPPIER_ACTIVE_SERVER_ID='$HAPPIER_ACTIVE_SERVER_ID' HAPPIER_SERVER_URL='$HAPPIER_SERVER_URL' HAPPIER_PUBLIC_SERVER_URL='$HAPPIER_PUBLIC_SERVER_URL' HAPPIER_WEBAPP_URL='$HAPPIER_WEBAPP_URL' $remote_happier_command auth wait --public-key '$remote_public_key' --json --persist" 2>/dev/null || true)"

@@ -199,7 +199,7 @@ function createInstrumentedRecipeExecutor(
       });
       return await waitForAuthPairing(publicKey);
     },
-    async approveAuthPairing(publicKey) {
+    async approveAuthPairing(publicKey, requestPayload) {
       if (!recipeExecutor.approveAuthPairing) {
         return;
       }
@@ -208,11 +208,11 @@ function createInstrumentedRecipeExecutor(
         message: `Running ${commandInvoker} auth approve --json`,
         diagnostics: {
           command: commandInvoker,
-          args: ['auth', 'approve', '--public-key', '[redacted]', '--json'],
+          args: ['auth', 'approve', '--public-key', '[redacted]', '--request-json-stdin', '--json'],
           details: publicKey ? 'Approving the local pairing request for this computer.' : undefined,
         },
       });
-      await recipeExecutor.approveAuthPairing(publicKey);
+      await recipeExecutor.approveAuthPairing(publicKey, requestPayload);
     },
     async installDaemonService(opts) {
       if (!recipeExecutor.installDaemonService) {

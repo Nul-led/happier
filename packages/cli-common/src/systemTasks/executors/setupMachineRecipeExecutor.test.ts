@@ -4,6 +4,45 @@ import { createSetupMachineRecipeExecutorFromHappierJsonExecutor } from './setup
 import { runSetupMachineRecipe } from '../recipes/setupMachineRecipe.js';
 
 describe('createSetupMachineRecipeExecutorFromHappierJsonExecutor', () => {
+  it('repairs local-only registration by approving the complete pairing envelope over stdin', async () => {
+    const request = {
+      publicKey: 'repair-request',
+      pairing: { secretB64Url: 'ephemeral-secret', createdAtMs: 100, expiresAtMs: 200 },
+      supportsTokenOnly: true,
+      url: 'https://home.test/pair',
+    };
+    let approved = false;
+    const executor = createSetupMachineRecipeExecutorFromHappierJsonExecutor({
+      executor: {
+        runHappierText: async () => ({ status: 0, stdout: '', stderr: '' }),
+        // CLI process boundary: enforce the approver's request-envelope contract.
+        runHappierJson: async (args, opts) => {
+          if (args.includes('request')) return request;
+          if (args.includes('approve')) {
+            expect(args).toEqual(['auth', 'approve', '--public-key', request.publicKey, '--request-json-stdin', '--json']);
+            expect(JSON.parse(opts?.input ?? 'null')).toEqual({
+              publicKey: request.publicKey, pairing: request.pairing, supportsTokenOnly: true,
+            });
+            approved = true;
+            return { ok: true };
+          }
+          if (args.includes('wait')) {
+            expect(approved).toBe(true);
+            return { machineId: 'machine-repaired' };
+          }
+          throw new Error('Unexpected CLI command');
+        },
+      },
+    });
+    const result = await runSetupMachineRecipe({
+      executor,
+      relayProfile: { serverUrl: 'https://home.test', webappUrl: 'https://home.test', localServerUrl: null },
+      initialAuthStatus: { authenticated: true, credentialState: 'valid', machineRegistrationState: 'local-only', machineId: null },
+      steps: { configureRelay: false, installService: false, startService: false, verifyService: false },
+      emit: () => undefined,
+    });
+    expect(result.machineId).toBe('machine-repaired');
+  });
   it.each(['server-confirmed', 'local-only'] as const)('claims app-approved replacement pairing for a different account with %s registration', async (registrationState) => {
     const commands: string[][] = [];
     let paired = false;
