@@ -100,6 +100,7 @@ export async function resolveDoctorRepairAuthContext(params: Readonly<{
       serverId: profile.id,
       serverName: profile.name || profile.id,
       serverUrl: isActive && params.targetServerId === null ? configuration.serverUrl : profile.serverUrl,
+      ...(isActive && !activeProfile ? { isRuntimeOnly: true } : {}),
       credentialState: isActive
         ? activeCredentialState
         : inactiveCredentialStateByServerId.get(profile.id) ?? 'missing',

@@ -45,7 +45,7 @@ describe('runGuidedRepair', () => {
         spawnSyncMock.mockReset();
     });
 
-    it('starts daemon repair against the finding server profile', async () => {
+    it.each([false, true])('starts daemon repair using the finding Home (runtime-only: %s)', async (isRuntimeOnly) => {
         spawnSyncMock.mockReturnValue({
             pid: 1234,
             output: [],
@@ -62,6 +62,7 @@ describe('runGuidedRepair', () => {
             serverId: 'scoped-server',
             serverName: 'Scoped Server',
             serverUrl: 'https://scoped.example.test',
+            ...(isRuntimeOnly ? { isRuntimeOnly: true } : {}),
         };
 
         const result = await runGuidedRepair({
@@ -80,12 +81,9 @@ describe('runGuidedRepair', () => {
         expect(childArgs).toBeDefined();
         const daemonArgIndex = childArgs?.lastIndexOf('daemon') ?? -1;
         expect(daemonArgIndex).toBeGreaterThanOrEqual(0);
-        expect(childArgs?.slice(daemonArgIndex, daemonArgIndex + 4)).toEqual([
-            'daemon',
-            'start',
-            '--server',
-            'scoped-server',
-        ]);
+        expect(childArgs?.slice(daemonArgIndex)).toEqual(isRuntimeOnly
+            ? ['daemon', 'start']
+            : ['daemon', 'start', '--server', 'scoped-server']);
     });
 
     it('targets the old channel service when replacing a switched stack', async () => {

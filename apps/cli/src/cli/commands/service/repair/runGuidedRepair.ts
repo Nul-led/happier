@@ -175,12 +175,12 @@ export async function runGuidedRepair(params: Readonly<{
       if (lines) for (const line of indentFindingBodyLines(lines)) console.log(line);
       const yes = await promptConfirmYesNo(`${FINDING_BODY_INDENT}${bold('Start the daemon now to register this machine?')}`, { default: 'yes' });
       if (yes) {
-        const daemonStartArgs = ['daemon', 'start', '--server', finding.serverId];
+        const daemonStartArgs = ['daemon', 'start', ...(finding.isRuntimeOnly ? [] : ['--server', finding.serverId])];
         const ok = runCliCommand(daemonStartArgs);
         if (ok) {
           console.log(`${FINDING_BODY_INDENT}${glyph.success()} done.`);
         } else {
-          console.log(`${FINDING_BODY_INDENT}${glyph.error()} ${severity.error('failed')} — retry: ${code(`${params.currentCli.invoker} daemon start --server ${finding.serverId}`)}`);
+          console.log(`${FINDING_BODY_INDENT}${glyph.error()} ${severity.error('failed')} — retry: ${code(`${params.currentCli.invoker} ${daemonStartArgs.join(' ')}`)}`);
         }
       }
       continue;

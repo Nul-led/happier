@@ -120,8 +120,8 @@ function remedyFor(p: AuthProfileSnapshot, status: ProfileStatus, invoker: strin
   switch (status) {
     case 'signed-in': return null;
     case 'stored-unverified': return null;
-    case 'expired': return `re-sign in: ${code(`${invoker} auth login --server ${p.serverId}`)}`;
-    case 'not-registered': return `register: ${code(`${invoker} --server ${p.serverId} daemon start`)}`;
-    case 'not-signed-in': return `sign in: ${code(`${invoker} auth login --server ${p.serverId}`)}`;
+    case 'expired': return `re-sign in: ${code(`${invoker} auth login${p.isRuntimeOnly ? '' : ` --server ${p.serverId}`}`)}`;
+    case 'not-registered': return `register: ${code(`${invoker}${p.isRuntimeOnly ? '' : ` --server ${p.serverId}`} daemon start`)}`;
+    case 'not-signed-in': return `sign in: ${code(`${invoker} auth login${p.isRuntimeOnly ? '' : ` --server ${p.serverId}`}`)}`;
   }
 }

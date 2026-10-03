@@ -6,6 +6,8 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 
 import { resolveDoctorRepairAuthContext } from './resolveDoctorRepairAuthContext';
+import { buildDoctorRepairReport } from './buildDoctorRepairReport';
+import { renderAuthentication } from '@/cli/commands/service/repair/sections/renderAuthentication';
 
 describe('doctor repair auth context', () => {
   const envScope = createEnvKeyScope(['HAPPIER_HOME_DIR', 'HAPPIER_ACTIVE_SERVER_ID', 'HAPPIER_SERVER_URL', 'HAPPIER_LOCAL_SERVER_URL', 'HAPPIER_WEBAPP_URL']);
@@ -45,19 +47,39 @@ describe('doctor repair auth context', () => {
     });
   });
 
-  it('includes a runtime-only Home without persisting a profile', async () => {
+  it.each(['missing', 'invalid', 'valid'] as const)('offers executable repair guidance for a %s runtime-only Home without persisting a profile', async (credentialState) => {
     await withTempDir('doctor-runtime-only-home-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir, HAPPIER_ACTIVE_SERVER_ID: undefined, HAPPIER_SERVER_URL: 'https://runtime-only.test', HAPPIER_LOCAL_SERVER_URL: 'http://localhost:43998', HAPPIER_WEBAPP_URL: undefined });
       reloadConfiguration();
-      await writeCredentialsTokenOnly({ token: 'runtime-only-token' });
+      await updateSettings((current) => ({ ...current, servers: { ...current.servers, saved: {
+        id: 'saved', name: 'Saved', serverUrl: 'https://saved.test', webappUrl: 'https://saved.test', createdAt: 0, updatedAt: 0, lastUsedAt: 0,
+      } } }));
+      if (credentialState !== 'missing') await writeCredentialsTokenOnly({ token: 'runtime-only-token' });
       const before = await readSettings();
-      const fetchBoundary = vi.fn(async () => new Response(JSON.stringify({ id: 'runtime-account' }), { status: 200 }));
+      const fetchBoundary = vi.fn(async () => new Response(JSON.stringify({ id: 'runtime-account' }), { status: credentialState === 'invalid' ? 401 : 200 }));
       vi.stubGlobal('fetch', fetchBoundary);
       const result = await resolveDoctorRepairAuthContext();
       expect(result.authSignals).toEqual(expect.arrayContaining([
-        expect.objectContaining({ serverId: configuration.activeServerId, serverUrl: 'https://runtime-only.test', isActive: true, credentialState: 'valid' }),
+        expect.objectContaining({ serverId: configuration.activeServerId, serverUrl: 'https://runtime-only.test', isActive: true, credentialState }),
       ]));
-      expect(fetchBoundary).toHaveBeenCalledWith('http://127.0.0.1:43998/v1/account/profile', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer runtime-only-token' }) }));
+      const report = await buildDoctorRepairReport({
+        ...result,
+        currentCli: { releaseChannel: 'dev', ringId: 'publicdev', version: '0.0.0', binaryPath: null, shim: 'hdev', invoker: 'happier', pathWinnerShim: null, pathWinnerResolvesToThisBinary: null },
+        automaticStartup: [], currentlyRunning: [], localRelays: [],
+        plan: { currentReleaseChannel: 'publicdev', existingServices: [], actions: [], manualWarnings: [] },
+        currentServerId: configuration.activeServerId, preferredMode: 'user',
+        latestRelayVersionForCurrentChannel: null, platform: 'linux', uid: null,
+      });
+      const text = renderAuthentication(report.authProfiles, report.hasAnyServerProfile).join('\n');
+      expect(report.findings).toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: credentialState === 'valid' ? 'machine_not_registered_for_profile'
+          : credentialState === 'invalid' ? 'auth_expired_for_active_profile' : 'auth_missing_for_profile',
+        serverId: configuration.activeServerId, isRuntimeOnly: true,
+      })]));
+      expect(text).toContain(credentialState === 'valid' ? 'happier daemon start' : 'happier auth login');
+      expect(text).not.toContain(`--server ${configuration.activeServerId}`);
+      expect(text).toContain('happier auth login --server saved');
+      if (credentialState !== 'missing') expect(fetchBoundary).toHaveBeenCalledWith('http://127.0.0.1:43998/v1/account/profile', expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer runtime-only-token' }) }));
       expect(await readSettings()).toEqual(before);
     });
   });
