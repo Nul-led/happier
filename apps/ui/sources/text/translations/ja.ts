@@ -4757,6 +4757,22 @@ localTailscale: {
       aurora: "オーロラ",
       classicRing: "クラシックリング",
     },
+    loadingIndicatorSpeed: "速度",
+    loadingIndicatorSpeedDescription: "光がドットを通り抜ける速さ",
+    loadingIndicatorSpeedOptions: {
+      slow: "遅い",
+      normal: "標準",
+      fast: "速い",
+    },
+    loadingIndicatorPause: "間隔",
+    loadingIndicatorPauseDescription: "各ループの前にドットが休む長さ",
+    loadingIndicatorPauseOptions: {
+      none: "なし",
+      short: "短い",
+      long: "長い",
+    },
+    loadingIndicatorPauseUnavailable: "このスタイルは休まずにループします。",
+    loadingIndicatorSpeedUnavailable: "クラシックリングは独自の一定の速さで回転します。",
     avatarStyle: "アバタースタイル",
     avatarStyleDescription: "セッションアバターの外観を選択",
     avatarOptions: {

@@ -4470,6 +4470,22 @@ export const es: TranslationStructure = {
       aurora: "Aurora",
       classicRing: "Anillo clásico",
     },
+    loadingIndicatorSpeed: "Velocidad",
+    loadingIndicatorSpeedDescription: "Lo rápido que la luz recorre los puntos",
+    loadingIndicatorSpeedOptions: {
+      slow: "Lenta",
+      normal: "Normal",
+      fast: "Rápida",
+    },
+    loadingIndicatorPause: "Pausa",
+    loadingIndicatorPauseDescription: "Cuánto descansan los puntos antes de cada ciclo",
+    loadingIndicatorPauseOptions: {
+      none: "Ninguna",
+      short: "Corta",
+      long: "Larga",
+    },
+    loadingIndicatorPauseUnavailable: "Este estilo se repite sin descanso.",
+    loadingIndicatorSpeedUnavailable: "El anillo clásico gira a su propio ritmo fijo.",
     avatarStyle: "Estilo de avatar",
     avatarStyleDescription: "Elige la apariencia del avatar de sesión",
     avatarOptions: {

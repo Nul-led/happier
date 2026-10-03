@@ -36,9 +36,14 @@ import {
     LOADING_INDICATOR_STYLE_LABEL_KEYS,
     LoadingIndicatorStylePreview,
 } from '@/components/settings/appearance/LoadingIndicatorStylePreview';
+import { loadingIndicatorTimingControls } from '@/components/ui/feedback/activitySpinner/dotSpinnerStyles';
 import {
     isLoadingIndicatorStyleId,
+    LOADING_INDICATOR_PAUSE_IDS,
+    LOADING_INDICATOR_SPEED_IDS,
     LOADING_INDICATOR_STYLE_IDS,
+    LoadingIndicatorPauseIdSchema,
+    LoadingIndicatorSpeedIdSchema,
     normalizeLoadingIndicatorStyleId,
 } from '@/sync/domains/settings/registry/local/loadingIndicatorStyleSetting';
 
@@ -95,6 +100,8 @@ export default React.memo(function AppearanceSettingsScreen() {
     const [uiFontScale, setUiFontScale] = useLocalSettingMutable('uiFontScale');
     const [uiItemDensity, setUiItemDensity] = useLocalSettingMutable('uiItemDensity');
     const [loadingIndicatorStyle, setLoadingIndicatorStyle] = useLocalSettingMutable('loadingIndicatorStyle');
+    const [loadingIndicatorSpeed, setLoadingIndicatorSpeed] = useLocalSettingMutable('loadingIndicatorSpeed');
+    const [loadingIndicatorPause, setLoadingIndicatorPause] = useLocalSettingMutable('loadingIndicatorPause');
     const [uiContentWidthMode, setUiContentWidthMode] = useLocalSettingMutable('uiContentWidthMode');
     const [uiMultiPanePanelsEnabled, setUiMultiPanePanelsEnabled] = useLocalSettingMutable('uiMultiPanePanelsEnabled');
     const [uiBackdropBlurEnabled, setUiBackdropBlurEnabled] = useLocalSettingMutable('uiBackdropBlurEnabled');
@@ -117,6 +124,8 @@ export default React.memo(function AppearanceSettingsScreen() {
     const [openDetailsTabsMenu, setOpenDetailsTabsMenu] = React.useState(false);
     const [openAvatarStyleMenu, setOpenAvatarStyleMenu] = React.useState(false);
     const [openLoadingIndicatorMenu, setOpenLoadingIndicatorMenu] = React.useState(false);
+    const [openLoadingIndicatorSpeedMenu, setOpenLoadingIndicatorSpeedMenu] = React.useState(false);
+    const [openLoadingIndicatorPauseMenu, setOpenLoadingIndicatorPauseMenu] = React.useState(false);
     const [openGitBadgeMenu, setOpenGitBadgeMenu] = React.useState(false);
     const [openTabBarSizeMenu, setOpenTabBarSizeMenu] = React.useState(false);
     const [openGlassBlurMenu, setOpenGlassBlurMenu] = React.useState(false);
@@ -167,6 +176,16 @@ export default React.memo(function AppearanceSettingsScreen() {
             icon: <LoadingIndicatorStylePreview styleId={styleId} />,
         }));
     }, []);
+
+    const loadingIndicatorSpeedMenuItems = React.useMemo(() => LOADING_INDICATOR_SPEED_IDS.map((id) => ({
+        id,
+        title: t(`settingsAppearance.loadingIndicatorSpeedOptions.${id}`),
+    })), []);
+
+    const loadingIndicatorPauseMenuItems = React.useMemo(() => LOADING_INDICATOR_PAUSE_IDS.map((id) => ({
+        id,
+        title: t(`settingsAppearance.loadingIndicatorPauseOptions.${id}`),
+    })), []);
 
     const gitBadgeMenuItems = React.useMemo((): readonly DropdownMenuItem[] => {
         return [
@@ -296,6 +315,9 @@ export default React.memo(function AppearanceSettingsScreen() {
     // Ensure we have a valid style for display, defaulting to gradient for unknown values
     const displayStyle = normalizeAvatarStyleId(avatarStyle);
     const displayLoadingIndicatorStyle = normalizeLoadingIndicatorStyleId(loadingIndicatorStyle);
+    // A timing choice the chosen style ignores stays visible but disabled, and says why once: the
+    // Classic Ring's note on Speed also covers the Pause row beneath it.
+    const loadingIndicatorTiming = loadingIndicatorTimingControls(displayLoadingIndicatorStyle);
     
     // Language display
     const getLanguageDisplayText = () => {
@@ -548,6 +570,50 @@ export default React.memo(function AppearanceSettingsScreen() {
                         if (!isLoadingIndicatorStyleId(itemId)) return;
                         setLoadingIndicatorStyle(itemId);
                     }}
+                />
+                <DropdownMenu
+                    open={openLoadingIndicatorSpeedMenu && loadingIndicatorTiming.speed}
+                    onOpenChange={setOpenLoadingIndicatorSpeedMenu}
+                    variant="selectable"
+                    search={false}
+                    selectedId={loadingIndicatorSpeed}
+                    showCategoryTitles={false}
+                    matchTriggerWidth={true}
+                    connectToTrigger={true}
+                    rowKind="item"
+                    itemTrigger={{
+                        title: t('settingsAppearance.loadingIndicatorSpeed'),
+                        subtitle: loadingIndicatorTiming.speed
+                            ? t('settingsAppearance.loadingIndicatorSpeedDescription')
+                            : t('settingsAppearance.loadingIndicatorSpeedUnavailable'),
+                        icon: <Icon name="speedometer" size={29} color={theme.colors.accent.indigo} />,
+                        showSelectedSubtitle: false,
+                        itemProps: { testID: 'settings-appearance-loadingIndicatorSpeed-select', disabled: !loadingIndicatorTiming.speed },
+                    }}
+                    items={loadingIndicatorSpeedMenuItems}
+                    onSelect={(itemId) => setLoadingIndicatorSpeed(LoadingIndicatorSpeedIdSchema.parse(itemId))}
+                />
+                <DropdownMenu
+                    open={openLoadingIndicatorPauseMenu && loadingIndicatorTiming.pause}
+                    onOpenChange={setOpenLoadingIndicatorPauseMenu}
+                    variant="selectable"
+                    search={false}
+                    selectedId={loadingIndicatorPause}
+                    showCategoryTitles={false}
+                    matchTriggerWidth={true}
+                    connectToTrigger={true}
+                    rowKind="item"
+                    itemTrigger={{
+                        title: t('settingsAppearance.loadingIndicatorPause'),
+                        subtitle: loadingIndicatorTiming.pause || !loadingIndicatorTiming.speed
+                            ? t('settingsAppearance.loadingIndicatorPauseDescription')
+                            : t('settingsAppearance.loadingIndicatorPauseUnavailable'),
+                        icon: <Icon name="hourglass" size={29} color={theme.colors.accent.purple} />,
+                        showSelectedSubtitle: false,
+                        itemProps: { testID: 'settings-appearance-loadingIndicatorPause-select', disabled: !loadingIndicatorTiming.pause },
+                    }}
+                    items={loadingIndicatorPauseMenuItems}
+                    onSelect={(itemId) => setLoadingIndicatorPause(LoadingIndicatorPauseIdSchema.parse(itemId))}
                 />
             </ItemGroup>
 

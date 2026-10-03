@@ -1,4 +1,12 @@
-import { DOT_SPINNER_STYLES, H_DOTS, type DotSpinnerStyleId } from './dotSpinnerStyles';
+import {
+    DOT_REST_OPACITY,
+    DOT_SPINNER_PAUSE_MS,
+    DOT_SPINNER_SPEED_RATES,
+    DOT_SPINNER_STYLES,
+    H_DOTS,
+    type DotSpinnerStyleId,
+    type DotSpinnerTiming,
+} from './dotSpinnerStyles';
 
 /**
  * Dot styles are rendered as pre-sampled frames stepped at a fixed rate instead of animating each
@@ -15,6 +23,12 @@ export const DOT_SPINNER_STILL_OPACITY = 0.85;
 
 export type DotSpinnerFrames = Readonly<{
     styleId: DotSpinnerStyleId;
+    /**
+     * Identifies this table among every style and timing: the same key is the same frames. Pauses a
+     * style ignores do not change it.
+     */
+    key: string;
+    /** One loop as played: the motion at the chosen speed, then (for a resting style) the pause. */
     cycleMs: number;
     frameCount: number;
     ink: 'mono' | 'aurora';
@@ -24,29 +38,49 @@ export type DotSpinnerFrames = Readonly<{
     hue: readonly number[] | null;
 }>;
 
-const framesCache = new Map<DotSpinnerStyleId, DotSpinnerFrames>();
+const framesCache = new Map<string, DotSpinnerFrames>();
 
 function round2(value: number): number {
     return Math.round(Math.min(1, Math.max(0, value)) * 100) / 100;
 }
 
-export function getDotSpinnerFrames(styleId: DotSpinnerStyleId): DotSpinnerFrames {
-    const cached = framesCache.get(styleId);
+/**
+ * The frame table for one style at one speed and pause. Speed divides the motion's duration; the
+ * pause is appended as absolute ms with every dot at rest. Tables are built once per distinct timing
+ * and shared, so every spinner of the same style, speed and pause draws the same frames.
+ */
+export function getDotSpinnerFrames(styleId: DotSpinnerStyleId, timing: DotSpinnerTiming): DotSpinnerFrames {
+    const style = DOT_SPINNER_STYLES[styleId];
+    const rate = DOT_SPINNER_SPEED_RATES[timing.speed];
+    const restMs = style.loop === 'rests' ? DOT_SPINNER_PAUSE_MS[timing.pause] : 0;
+    const key = `${styleId}.${timing.speed}.${restMs}`;
+    const cached = framesCache.get(key);
     if (cached) return cached;
 
-    const style = DOT_SPINNER_STYLES[styleId];
-    const frameCount = Math.round((style.cycleMs * DOT_SPINNER_FRAMES_PER_SECOND) / 1000);
+    const playedMotionMs = style.motionMs / rate;
+    const playedCycleMs = playedMotionMs + restMs;
+    const frameCount = Math.max(1, Math.round((playedCycleMs * DOT_SPINNER_FRAMES_PER_SECOND) / 1000));
     const opacity: number[] = [];
     const hue: number[] | null = style.hue ? [] : null;
     for (let frame = 0; frame < frameCount; frame++) {
-        const tMs = (frame * style.cycleMs) / frameCount;
+        const playedMs = (frame * playedCycleMs) / frameCount;
+        const resting = playedMs >= playedMotionMs;
+        const tMs = playedMs * rate;
         for (const dot of H_DOTS) {
-            opacity.push(round2(style.opacity(dot, tMs)));
-            if (hue && style.hue) hue.push(round2(style.hue(dot, tMs)));
+            opacity.push(round2(resting ? DOT_REST_OPACITY : style.opacity(dot, tMs)));
+            if (hue && style.hue) hue.push(round2(style.hue(dot, resting ? style.motionMs : tMs)));
         }
     }
-    const frames: DotSpinnerFrames = { styleId, cycleMs: style.cycleMs, frameCount, ink: style.ink, opacity, hue };
-    framesCache.set(styleId, frames);
+    const frames: DotSpinnerFrames = {
+        styleId,
+        key,
+        cycleMs: Math.round(playedCycleMs),
+        frameCount,
+        ink: style.ink,
+        opacity,
+        hue,
+    };
+    framesCache.set(key, frames);
     return frames;
 }
 

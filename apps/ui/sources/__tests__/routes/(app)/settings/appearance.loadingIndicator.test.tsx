@@ -108,7 +108,15 @@ afterEach(() => {
     standardCleanup();
     resetSessionSettingsEntryState();
     shared.settingsState.loadingIndicatorStyle = 'wave';
+    shared.settingsState.loadingIndicatorSpeed = 'normal';
+    shared.settingsState.loadingIndicatorPause = 'short';
 });
+
+function findDropdown(screen: Awaited<ReturnType<typeof renderSettingsView>>, title: string): any {
+    const dropdown = screen.findAllByType('DropdownMenu' as any).find((node: any) => node.props?.itemTrigger?.title === title);
+    if (!dropdown) throw new Error(`Expected the ${title} dropdown`);
+    return dropdown;
+}
 
 describe('Appearance settings loading indicator', () => {
     it('offers every loading indicator style with a live preview and saves the choice', async () => {
@@ -138,6 +146,47 @@ describe('Appearance settings loading indicator', () => {
             dropdown!.props.onSelect('notAStyle');
         });
         expect(shared.settingsState.loadingIndicatorStyle).toBe('radar');
+    });
+
+    it('chooses the speed and the pause between loops beside the style and saves them on this device', async () => {
+        shared.settingsState.loadingIndicatorSpeed = 'normal';
+        shared.settingsState.loadingIndicatorPause = 'short';
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen), {
+            flushOptions: { cycles: 0 },
+        });
+
+        const speed = findDropdown(screen, 'settingsAppearance.loadingIndicatorSpeed');
+        const pause = findDropdown(screen, 'settingsAppearance.loadingIndicatorPause');
+        expect(speed.props.selectedId).toBe('normal');
+        expect(speed.props.items.map((item: { id: string }) => item.id)).toEqual(['slow', 'normal', 'fast']);
+        expect(pause.props.selectedId).toBe('short');
+        expect(pause.props.items.map((item: { id: string }) => item.id)).toEqual(['none', 'short', 'long']);
+        expect(speed.props.itemTrigger.itemProps.disabled).toBe(false);
+        expect(pause.props.itemTrigger.itemProps.disabled).toBe(false);
+
+        await act(async () => { speed.props.onSelect('fast'); });
+        await act(async () => { pause.props.onSelect('long'); });
+        expect(shared.settingsState.loadingIndicatorSpeed).toBe('fast');
+        expect(shared.settingsState.loadingIndicatorPause).toBe('long');
+    });
+
+    it.each([
+        ['radar', { speed: false, pause: true }],
+        ['classicRing', { speed: true, pause: true }],
+    ] as const)('says when the %s style ignores a timing choice instead of offering it', async (styleId, disabled) => {
+        shared.settingsState.loadingIndicatorStyle = styleId;
+        const screen = await renderSettingsView(React.createElement(AppearanceSettingsScreen), {
+            flushOptions: { cycles: 0 },
+        });
+
+        const speed = findDropdown(screen, 'settingsAppearance.loadingIndicatorSpeed');
+        const pause = findDropdown(screen, 'settingsAppearance.loadingIndicatorPause');
+        expect(speed.props.itemTrigger.itemProps.disabled).toBe(disabled.speed);
+        expect(pause.props.itemTrigger.itemProps.disabled).toBe(disabled.pause);
+        // One reason per state: the ring's note sits on Speed and covers Pause too.
+        expect([speed.props.itemTrigger.subtitle, pause.props.itemTrigger.subtitle]).toEqual(styleId === 'classicRing'
+            ? ['settingsAppearance.loadingIndicatorSpeedUnavailable', 'settingsAppearance.loadingIndicatorPauseDescription']
+            : ['settingsAppearance.loadingIndicatorSpeedDescription', 'settingsAppearance.loadingIndicatorPauseUnavailable']);
     });
 
     it('keeps the previews out of the accessibility tree, since the option title already names the style', async () => {

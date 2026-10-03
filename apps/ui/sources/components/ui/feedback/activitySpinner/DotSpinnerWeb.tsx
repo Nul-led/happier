@@ -7,7 +7,7 @@ import {
     getDotSpinnerFrames,
     type DotSpinnerInk,
 } from './dotSpinnerFrames';
-import type { DotSpinnerStyleId } from './dotSpinnerStyles';
+import type { DotSpinnerStyleId, DotSpinnerTiming } from './dotSpinnerStyles';
 import type { DotSpinnerMotion } from './dotSpinnerMotion';
 
 const FILMSTRIP_ANIMATION_NAME = 'happierActivitySpinnerFilmstrip';
@@ -64,16 +64,18 @@ function alignToDocumentClock(element: HTMLElement | null): void {
 
 export function DotSpinnerWeb(props: Readonly<{
     styleId: DotSpinnerStyleId;
+    timing: DotSpinnerTiming;
     size: number;
     ink: DotSpinnerInk;
     motion: DotSpinnerMotion;
     viewProps: ViewProps;
 }>) {
-    const { styleId, size, ink, motion, viewProps } = props;
-    const frames = getDotSpinnerFrames(styleId);
+    const { styleId, timing, size, ink, motion, viewProps } = props;
+    const frames = getDotSpinnerFrames(styleId, timing);
     const animate = motion === 'animate';
     const inkKey = encodeURIComponent(JSON.stringify('color' in ink ? { color: ink.color } : { aurora: ink.aurora }));
-    const key = `${styleId}-${animate ? 'strip' : 'still'}-${inkKey}`;
+    // The strip's frames depend on the timing; the still pose does not.
+    const key = `${animate ? frames.key : styleId}-${animate ? 'strip' : 'still'}-${inkKey}`;
     const stripRef = React.useRef<HTMLSpanElement | null>(null);
 
     useInsertionEffectSafe(() => {

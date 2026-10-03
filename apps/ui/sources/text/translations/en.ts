@@ -4193,6 +4193,22 @@ export const en = {
             aurora: "Aurora",
             classicRing: "Classic Ring",
         },
+        loadingIndicatorSpeed: "Speed",
+        loadingIndicatorSpeedDescription: "How quickly the light moves through the dots",
+        loadingIndicatorSpeedOptions: {
+            slow: "Slow",
+            normal: "Normal",
+            fast: "Fast",
+        },
+        loadingIndicatorPause: "Pause",
+        loadingIndicatorPauseDescription: "How long the dots rest before each loop",
+        loadingIndicatorPauseOptions: {
+            none: "None",
+            short: "Short",
+            long: "Long",
+        },
+        loadingIndicatorPauseUnavailable: "This style loops without resting.",
+        loadingIndicatorSpeedUnavailable: "The Classic Ring turns at its own fixed pace.",
         avatarStyle: 'Avatar Style',
         avatarStyleDescription: 'Choose session avatar appearance',
         avatarOptions: {

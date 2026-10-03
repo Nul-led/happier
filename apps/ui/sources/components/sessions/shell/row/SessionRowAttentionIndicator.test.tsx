@@ -63,6 +63,22 @@ describe('SessionRowAttentionIndicator', () => {
         expect(findCssAnimatedNodes(spinner).length).toBeGreaterThan(0);
     });
 
+    it('draws the working spinner at 16 px so it reads beside the row\'s agent icons', async () => {
+        const { SessionRowAttentionIndicator } = await import('./SessionRowAttentionIndicator');
+        const screen = await renderScreen(
+            <SessionRowAttentionIndicator
+                indicator="working"
+                sessionId="session-size"
+                attentionState="working"
+                workingMode="spinner"
+                animationEnabled={false}
+            />,
+        );
+
+        const spinner = screen.findByTestId('session-row-attention-indicator-spinner-session-size');
+        expect(flattenStyle(spinner?.props.style)).toMatchObject({ width: 16, height: 16 });
+    });
+
     it('can render compact row indicators statically for mounted offscreen web rows', async () => {
         const { SessionRowAttentionIndicator } = await import('./SessionRowAttentionIndicator');
 

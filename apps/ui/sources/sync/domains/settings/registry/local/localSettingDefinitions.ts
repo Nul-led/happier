@@ -14,7 +14,11 @@ import {
 } from '@/theme/profiles/themeProfilePersistence';
 import { SessionListFocusedFolderV1Schema } from '@/sync/domains/session/folders';
 import {
+    DEFAULT_LOADING_INDICATOR_PAUSE_ID,
+    DEFAULT_LOADING_INDICATOR_SPEED_ID,
     DEFAULT_LOADING_INDICATOR_STYLE_ID,
+    LoadingIndicatorPauseIdSchema,
+    LoadingIndicatorSpeedIdSchema,
     LoadingIndicatorStyleIdSchema,
 } from './loadingIndicatorStyleSetting';
 import {
@@ -213,6 +217,20 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: LoadingIndicatorStyleIdSchema,
         default: DEFAULT_LOADING_INDICATOR_STYLE_ID,
         description: 'Which loading indicator spinners draw: one of the dot H styles, or the classic ring',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    loadingIndicatorSpeed: {
+        schema: LoadingIndicatorSpeedIdSchema,
+        default: DEFAULT_LOADING_INDICATOR_SPEED_ID,
+        description: 'How fast dot loading indicators play: slow, normal or fast',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    loadingIndicatorPause: {
+        schema: LoadingIndicatorPauseIdSchema,
+        default: DEFAULT_LOADING_INDICATOR_PAUSE_ID,
+        description: 'How long dot loading indicators rest between loops: none, short or long',
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
     },
