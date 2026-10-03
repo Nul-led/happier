@@ -536,6 +536,8 @@ export type AgentPreflightSessionControlsProbeInputV1 = Readonly<{
  */
 export type AgentPreflightSessionControlsProbeContextV1 =
   AgentPreflightSessionControlsProbeInputV1 & Readonly<{
+    /** Host-selected working directory used by the declared preflight process. */
+    cwd: string;
     bypassCache?: boolean;
     signal: AbortSignal;
     runDeclaredSystemToolCommand(input: Readonly<{

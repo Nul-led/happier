@@ -29,6 +29,7 @@ function createPreflightContext(params: Readonly<{
     },
   });
   const context: AgentPreflightSessionControlsProbeContextV1 = {
+    cwd: process.cwd(),
     accountSettings: params.accountSettings ?? null,
     runtimeDescriptorV1: params.runtimeDescriptorV1,
     runtimeKindOverride: params.runtimeKindOverride,

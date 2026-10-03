@@ -8,11 +8,17 @@ import { createAcpBackendFromDefinition } from '../runtime/definition/backend';
 import { createAcpRuntimeDefinition } from '../runtime/definition/create';
 import type { AgentMessage } from '../../core/AgentMessage';
 import { withTempDir } from '@/testkit/fs/tempDir';
+import { COPILOT_ACP_RUNTIME_DEFINITION } from '@happier-dev/plugins-copilot/agent';
+import type { AgentAcpRuntimeDefinition } from '@happier-dev/plugin-sdk/agents/runtime';
+import { AgentRuntimeJsonValueV1Schema } from '@happier-dev/protocol/runtime';
 
-function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: boolean }): string {
+function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: boolean; modelConfigEffort?: boolean; wrongConfigModel?: boolean; groupedModelChoices?: boolean }): string {
   const src = `
     const decoder = new TextDecoder();
     let buf = '';
+    let currentModelId = 'model-a';
+    let currentEffort = 'high';
+    let telemetry = 'on';
 
     function send(obj) {
       process.stdout.write(JSON.stringify(obj) + '\\n');
@@ -125,18 +131,37 @@ function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: bool
         }
 
         if (method === 'session/set_config_option') {
-          ok(id, {
+          if (params.configId === 'model') {
+            currentModelId = params.value;
+            currentEffort = 'high';
+          }
+          if (params.configId === 'reasoning_effort') currentEffort = params.value;
+          if (params.configId === 'telemetry') telemetry = params.value;
+          const result = {
             configOptions: [{
-              id: params.configId,
+              id: ${params.modelConfigEffort === true} ? 'model' : params.configId,
               name: 'Agent model choice',
               type: 'select',
-              currentValue: params.value,
+              currentValue: ${params.wrongConfigModel === true} ? 'model-a' : (${params.modelConfigEffort === true} ? currentModelId : params.value),
               options: [
                 { value: 'model-a', name: 'Model A' },
                 { value: 'model-b', name: 'Model B' },
               ],
-            }],
-          });
+            }, ...(${params.modelConfigEffort === true} ? [{
+              id: 'reasoning_effort', name: 'Effort', category: 'thought_level', type: 'select',
+              currentValue: currentEffort,
+              options: currentEffort === 'medium'
+                ? [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }]
+                : [{ value: 'high', name: 'High' }],
+            }, {
+              id: 'telemetry', name: 'Telemetry', type: 'select', currentValue: telemetry,
+              options: [{ value: 'on', name: 'On' }, { value: 'off', name: 'Off' }],
+            }] : [])],
+          };
+          if (${params.groupedModelChoices === true}) {
+            result.configOptions[0].options = [{ group: 'available', name: 'Available', options: result.configOptions[0].options }];
+          }
+          ok(id, result);
           continue;
         }
 
@@ -153,6 +178,56 @@ function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: bool
 }
 
 describe('AcpBackend session models', () => {
+  it('does not acknowledge a config-option model switch to a different returned model', async () => {
+    await withTempDir('happier-acp-wrong-config-model-', async (dir) => {
+      const script = writeFakeAcpAgentScript({ dir, wrongConfigModel: true });
+      const backend = new AcpBackend({ agentName: 'test', cwd: dir, command: process.execPath, args: [script], modelConfigOptionId: 'model' });
+      try {
+        const { sessionId } = await backend.startSession();
+        const before = backend.getSessionModelState();
+        await expect(backend.setSessionModel(sessionId, 'model-b')).rejects.toThrow();
+        expect(backend.getSessionModelState()).toEqual(before);
+      } finally { await backend.dispose(); }
+    });
+  });
+
+  it.each([false, true])('projects Copilot controls without erasing another model controls (grouped choices: %s)', async (groupedModelChoices) => {
+    await withTempDir('happier-copilot-model-controls-', async (dir) => {
+      const script = writeFakeAcpAgentScript({ dir, modelConfigEffort: true, groupedModelChoices });
+      const definition: AgentAcpRuntimeDefinition = COPILOT_ACP_RUNTIME_DEFINITION;
+      const backend = new AcpBackend({
+        agentName: 'test', cwd: dir, command: process.execPath, args: [script],
+        modelConfigOptionId: definition.modelConfigOptionId,
+        projectSetModelResponse: (input) => {
+          const result = definition.models?.projectSetModelResponse?.({ ...input, response: AgentRuntimeJsonValueV1Schema.parse(input.response) });
+          if (!result) return null;
+          const { modelOptions, ...model } = result;
+          return { ...model, ...(modelOptions ? { modelOptions: modelOptions.map((option) => ({ ...option, ...(option.options ? { options: [...option.options] } : {}) })) } : {}) };
+        },
+      });
+      try {
+        const { sessionId } = await backend.startSession();
+        await backend.setSessionModel(sessionId, 'model-b');
+        expect(backend.getSessionModelState()).toMatchObject({
+          currentModelId: 'model-b', availableModels: [
+            { id: 'model-a', modelOptions: [{ id: 'reasoning_effort', currentValue: 'medium' }, { id: 'service_tier' }] },
+            { id: 'model-b', modelOptions: [{ id: 'reasoning_effort', currentValue: 'high', options: [{ value: 'high', name: 'High' }] }] },
+          ],
+        });
+        // Return to an observed model, then change its effort through the config path.
+        await backend.setSessionModel(sessionId, 'model-a');
+        const modelB = backend.getSessionModelState()?.availableModels.find((model) => model.id === 'model-b');
+        await backend.setSessionConfigOption(sessionId, 'reasoning_effort', 'medium');
+        expect(backend.getSessionModelState()?.availableModels.find((model) => model.id === 'model-a')?.modelOptions)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ id: 'reasoning_effort', currentValue: 'medium' })]));
+        expect(backend.getSessionModelState()?.availableModels.find((model) => model.id === 'model-b')).toEqual(modelB);
+        const beforeTelemetry = backend.getSessionModelState();
+        await backend.setSessionConfigOption(sessionId, 'telemetry', 'off');
+        expect(backend.getSessionModelState()).toBe(beforeTelemetry);
+      } finally { await backend.dispose(); }
+    });
+  });
+
   it('reports successful empty model choices through the generic ACP preflight', async () => {
     await withTempDir('happier-acp-empty-preflight-', async (dir) => {
       const script = writeFakeAcpAgentScript({ dir, emptyModelChoices: true });

@@ -12,6 +12,8 @@ import type {
 } from '@happier-dev/plugin-sdk/agents/runtime';
 
 import { writeExecutableShimSync } from '@/testkit/fs/executableShim';
+import { writeAcpTestAgentScript } from '@/agent/acp/testkit/subprocessHarness';
+import { COPILOT_PLUGIN } from '@happier-dev/plugins-copilot';
 
 import {
   createCliSessionCommandHandler,
@@ -41,6 +43,48 @@ function writePreflightFixtureExecutable(dir: string): string {
 }
 
 describe('Agent registration catalog projections', () => {
+  it('runs the Copilot preflight with the host working directory and observed effort controls', async () => {
+    const register = vi.fn();
+    await COPILOT_PLUGIN.activate({ agents: { register } } as never);
+    const preflightSessionControls: AgentPreflightSessionControlsContributionV1 | undefined = register.mock.calls[0]?.[2]?.preflightSessionControls;
+    expect(preflightSessionControls).toBeDefined();
+    const toolRoot = await mkdtemp(join(tmpdir(), 'happier-copilot-preflight-'));
+    const script = writeAcpTestAgentScript({ dir: toolRoot, fileName: 'copilot-fixture.mjs', source: `
+      let buffer = '';
+      process.stdin.on('data', chunk => {
+        buffer += chunk;
+        const lines = buffer.split('\\n'); buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const request = JSON.parse(line);
+          if (!('id' in request)) continue;
+          const result = request.method === 'initialize' ? { protocolVersion: 1 } :
+            request.params.cwd === process.cwd() && request.params.mcpServers.length === 0 ? {
+              sessionId: 'probe', models: { currentModelId: 'model-a', availableModels: [{ modelId: 'model-a', name: 'A' }, { modelId: 'model-b', name: 'B' }] },
+              configOptions: [{ id: 'reasoning_effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'high', options: [{ value: 'high', name: 'High' }] }],
+            } : null;
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+        }
+      });
+    ` });
+    const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+    const executable = writeExecutableShimSync({ dir: toolRoot, fileName: process.platform === 'win32' ? 'copilot.cmd' : 'copilot',
+      contents: process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "${script}" %*\r\n` : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)} "$@"\n`,
+    });
+    try {
+      const projected = projectAgentPreflightSessionControlsCatalogEntry({
+        agentId: 'copilot', preflightSessionControls: preflightSessionControls!,
+        systemTools: [{ id: 'copilot-cli', title: 'Copilot', executableNames: [executable] }],
+        retirementSignal: new AbortController().signal, isCurrent: () => true,
+      });
+      const adapter = await projected.getPreflightSessionControlsProbeAdapter?.();
+      await expect(adapter?.probeModelsRaw?.({ cwd: toolRoot, timeoutMs: 10_000, accountSettings: null })).resolves.toEqual([
+        { modelId: 'model-a', name: 'A', modelOptions: [{ id: 'reasoning_effort', name: 'Effort', type: 'select', currentValue: 'high', options: [{ value: 'high', name: 'High' }] }] },
+        { modelId: 'model-b', name: 'B' },
+      ]);
+    } finally { await rm(toolRoot, { recursive: true, force: true }); }
+  });
+
   beforeEach(() => {
     runBackendSessionCliCommandMock.mockClear();
   });
