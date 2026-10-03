@@ -355,7 +355,8 @@ test.describe('ui e2e: auth + terminal connect', () => {
       // Depending on whether the restart restores the existing agent process before
       // this send, the follow-up is either delivered or safely remains queued. Both
       // are valid outcomes; the invariant is that the user-visible follow-up is not lost.
-      const pending = page.locator('[data-testid^="pendingMessages.message:"]', { hasText: followup });
+      const pending = page.locator('[data-testid^="pendingMessages.message:"]', { hasText: followup })
+        .and(page.getByRole('button', { name: 'Pending messages · Queued', exact: true }));
       const delivered = page.locator('[data-testid^="transcript-message-"]:not([data-testid*=":"])', { hasText: followup });
       // Observe either valid visible state in the same retrying assertion. The
       // queue may drain immediately after observation as the daemon reconnects.

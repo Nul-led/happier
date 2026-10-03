@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { stripVTControlCharacters } from 'node:util';
 import { captureConsoleText } from '@/testkit/logger/captureOutput';
 
 const {
@@ -152,7 +153,7 @@ describe('CLI startup runtime reexec', () => {
       await import('./index');
 
       await vi.waitFor(() => {
-        expect(output.lines).toContain('x startup blew up');
+        expect(output.lines.map(stripVTControlCharacters)).toContain('x startup blew up');
         expect(loggerFatalMock).toHaveBeenCalledWith(startupError);
         expect(process.exitCode).toBe(1);
       });
