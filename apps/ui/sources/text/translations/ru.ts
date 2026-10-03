@@ -3547,6 +3547,8 @@ export const ru: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Отключать уведомления телефона при работе на компьютере",
+        mutePhoneWhenComputerFocusedSubtitle: "Не отправлять уведомления «Готово» и запросы, пока хотя бы одно окно Happier на компьютере имеет фокус. Они возобновятся, когда ни одно окно на компьютере не будет в фокусе.",
     push: {
       title: "Push-уведомления",
       footer:

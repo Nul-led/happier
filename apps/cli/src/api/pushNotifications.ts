@@ -108,7 +108,7 @@ export class PushNotificationClient {
     /**
      * Fetch all push tokens for the authenticated user
      */
-    async fetchPushTokens(): Promise<PushToken[]> {
+    async fetchPushTokens(options?: Readonly<{ suppressIfComputerFocused?: boolean }>): Promise<PushToken[]> {
         const debugPush = isPushDebugEnabled()
         const nowMs = Date.now()
         if (this.pushTokenFetchFailureCooldownUntilMs > nowMs) {
@@ -122,7 +122,7 @@ export class PushNotificationClient {
         }
         try {
             const response = await axios.get<{ tokens: PushToken[] }>(
-                `${this.baseUrl}/v1/push-tokens`,
+                `${this.baseUrl}/v1/push-tokens${options?.suppressIfComputerFocused === true ? '?suppressIfComputerFocused=1' : ''}`,
                 {
                     headers: {
                         'Authorization': `Bearer ${this.token}`,
@@ -373,14 +373,14 @@ export class PushNotificationClient {
      * @param body - Notification body
      * @param data - Additional data to send with the notification
      */
-    async sendToAllDevicesAsync(title: string, body: string, data?: Record<string, any>): Promise<void> {
+    async sendToAllDevicesAsync(title: string, body: string, data?: Record<string, any>, options?: Readonly<{ suppressIfComputerFocused?: boolean }>): Promise<void> {
         const debugPush = isPushDebugEnabled()
         if (debugPush) logger.debug(`[PUSH] sendToAllDevicesAsync called with title: "${title}", body: "${body}"`);
 
         try {
             // Fetch all push tokens
             if (debugPush) logger.debug('[PUSH] Fetching push tokens...')
-            const tokens = await this.fetchPushTokens()
+            const tokens = await this.fetchPushTokens(options)
             if (debugPush) logger.debug(`[PUSH] Fetched ${tokens.length} push tokens`)
 
             // Log token details for debugging
@@ -432,7 +432,7 @@ export class PushNotificationClient {
         }
     }
 
-    sendToAllDevices(title: string, body: string, data?: Record<string, any>): void {
-        void this.sendToAllDevicesAsync(title, body, data).catch(() => {});
+    sendToAllDevices(title: string, body: string, data?: Record<string, any>, options?: Readonly<{ suppressIfComputerFocused?: boolean }>): void {
+        void this.sendToAllDevicesAsync(title, body, data, options).catch(() => {});
     }
 }

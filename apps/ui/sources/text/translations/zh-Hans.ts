@@ -3493,6 +3493,8 @@ export const zhHans: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "电脑窗口获得焦点时静音手机通知",
+        mutePhoneWhenComputerFocusedSubtitle: "任一电脑上的 Happier 窗口获得焦点时，不发送就绪和请求推送通知。所有电脑窗口都失去焦点后恢复通知。",
     badges: {
       title: "此设备上的角标",
       footer: "选择在此设备上哪些活动会影响应用图标角标。",

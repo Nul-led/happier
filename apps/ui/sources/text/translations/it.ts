@@ -3937,6 +3937,8 @@ export const it: TranslationStructure = {
   },
 
   settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silenzia il telefono quando il computer è attivo",
+        mutePhoneWhenComputerFocusedSubtitle: "Silenzia le notifiche Pronto e le richieste mentre una finestra di Happier su un computer ha il focus. Riprendono quando nessuna finestra su computer ha il focus.",
     badges: {
       title: "Badge su questo dispositivo",
       footer:

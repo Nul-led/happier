@@ -3328,6 +3328,8 @@ export const fr: TranslationStructure = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Couper les alertes du téléphone sur ordinateur",
+        mutePhoneWhenComputerFocusedSubtitle: "Couper les notifications Prêt et demandes quand au moins une fenêtre Happier sur ordinateur a le focus. Elles reprennent uniquement quand aucune fenêtre Happier sur ordinateur n’a le focus.",
         badges: {
             title: 'Badges',
             footer: 'Contrôle les compteurs de badges et les indicateurs desktop.',
