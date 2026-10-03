@@ -14,6 +14,10 @@ import {
 } from '@/theme/profiles/themeProfilePersistence';
 import { SessionListFocusedFolderV1Schema } from '@/sync/domains/session/folders';
 import {
+    DEFAULT_LOADING_INDICATOR_STYLE_ID,
+    LoadingIndicatorStyleIdSchema,
+} from './loadingIndicatorStyleSetting';
+import {
     SESSION_LIST_FOLDER_SORT_MODE_DEFAULT_V1,
     SESSION_LIST_FOLDER_SORT_MODES_V1,
 } from '@/sync/domains/session/listing/sessionListFolderSortMode';
@@ -202,6 +206,13 @@ export const LOCAL_SETTING_DEFINITIONS = defineSettingDefinitions({
         schema: z.enum(['comfortable', 'cozy', 'compact']),
         default: 'cozy',
         description: 'Preferred item density for Item-based UI rows',
+        storageScope: 'local',
+        analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
+    },
+    loadingIndicatorStyle: {
+        schema: LoadingIndicatorStyleIdSchema,
+        default: DEFAULT_LOADING_INDICATOR_STYLE_ID,
+        description: 'Which loading indicator spinners draw: one of the dot H styles, or the classic ring',
         storageScope: 'local',
         analytics: { trackCurrentState: true, trackChanges: true, valueKind: 'enum', privacy: 'safe', identityScope: 'device_user' },
     },

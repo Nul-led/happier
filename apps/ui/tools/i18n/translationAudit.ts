@@ -136,6 +136,11 @@ const ALLOW_SAME_STRING_KEYS_BY_LOCALE: Readonly<Record<string, ReadonlySet<stri
     'connectedServices.detail.segments.pools': new Set(['es', 'pt', 'ca']),
     'connectedServices.pools.title': new Set(['es', 'pt', 'ca']),
     'connectedServices.profile.poolsGroupTitle': new Set(['es', 'pt', 'ca']),
+    // Loading indicator style names: "Radar" and "Aurora" are the same word in these locales,
+    // and French uses "Style" for the picker title.
+    'settingsAppearance.loadingIndicatorOptions.radar': new Set(['pl', 'es', 'fr', 'it', 'pt', 'ca', 'de']),
+    'settingsAppearance.loadingIndicatorOptions.aurora': new Set(['es', 'it', 'pt', 'ca']),
+    'settingsAppearance.loadingIndicatorStyle': new Set(['fr']),
 };
 
 function isProviderPluginTitleKey(key: string): boolean {
