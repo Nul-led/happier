@@ -125,6 +125,11 @@ CLI cannot serve (below). Settings › This computer › Command line offers the
 - The question is asked again only from Settings › This computer › Command line (`reconsiderCli`),
   when the kept CLI disappeared, or when it is below the floor (a CLI that cannot report its version
   counts as below it).
+  In current development source, the Settings action remains available when the active relay has
+  a user-owned pinned service: the existing setup executor accepts `cliOnly` together with
+  `reconsiderCli`, changes the home-wide CLI choice and PATH through these same owners, and performs
+  no relay, credential or service convergence. PATH keeps its ancillary timing; managed CLI
+  acquisition and required upgrades retain the existing update contract.
 - A kept CLI that disappeared is still the recorded answer (R13 b). The resolver fails
   `cli_choice_required` instead of using a managed copy left on disk or acquiring one, so the app-open
   read routes into setup, whose first step asks again: about a `happier` installed since elsewhere,
@@ -170,8 +175,11 @@ caller's own (the app's variant), so a preview app on an empty home acquires a p
 app's channel (wait for that channel's release, or make the app's channel the default with the
 installer's `--channel`); `daemon.service.status.v1` reports the answering CLI's channel as
 `acquisition.channel` (`null` for an override). `SETUP_CLI_VERSION_FLOOR` in `happierCli.ts` is the one
-version floor desktop setup enforces; below it a managed CLI is reacquired once and then fails by
-name, and an `override` CLI fails immediately. Only `managed` is approved for pairing silently; an
+version floor desktop setup enforces. In current development source, replacing an installed managed
+CLI below it uses `runManagedCliUpdate`, with the target floor checked before activation and the
+existing staged smoke, restoration and service-restart proof. First acquisition keeps the acquisition
+owner and checks the resolved release against the floor before installation; an `override` CLI fails
+immediately. Only `managed` is approved for pairing silently; an
 `override` CLI is put to the user once, naming the resolved path. `managed` records install
 ownership, not verified publisher provenance — see
 [Managed-CLI install ownership](cli-architecture.md#managed-cli-install-ownership-silent-vs-attended-approval).

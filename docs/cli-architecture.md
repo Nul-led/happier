@@ -137,6 +137,18 @@ for, the account the run is pairing this computer to, the CLI's pairing requirem
 names, so the builder strips any `user:pass@` userinfo before the prompt becomes an event —
 identity is unaffected because the comparable key ignores userinfo on both sides.
 
+In current development source, explicit Connect, Repair and command-line changes share the
+shell's `desktopSetupCoordinator` operation. It retains the exact task, target and prompt responder
+in memory while Home, Settings and popovers subscribe or reopen; navigation releases presentation,
+not the responder. The Home lifecycle adopts that same run and proves readiness through a fresh
+runtime inspection and machine capability RPC after success. Nothing resumes across app restarts.
+
+In current 0.2 development source, Update all retains its supplied plan, progress and Stop intent
+beside the existing `machineUpdateRuns` action owner, scoped to the initiating server/account.
+Closing Updates releases its detail subscriptions, not the batch; reopening adopts the same work.
+The queued local CLI action captures its initiating task and completion scope before other items
+run. Detail discovery remains lazy, and no batch resumes across app restarts.
+
 ### Managed-CLI install ownership: silent vs attended approval
 
 Approving a pairing hands the requesting CLI the account content key, so the app decides **how** to
@@ -172,15 +184,18 @@ developers and forks running a CLI they built themselves would buy no security �
 Approval is also bound to the account: the executor states the `expectedAccountId` it was started
 with on the prompt, and the app refuses (`account_mismatch`) when that is absent or is not the
 account the app started this run for — the sealed response carries that account's content key. The
-account, relay, CLI identity and pairing-requirement checks are **hard** refusals and are all
+credentials read for the target must also name that original account in their token: a later
+sign-in on the same profile cannot approve a retained run with another account's key. A mismatch
+is refused before sealing or any relay request; an unreadable token is `credentials_unusable`. The
+prompt's account, relay, CLI identity and pairing-requirement checks are **hard** refusals and are all
 settled before install ownership is considered, so none of them can be talked past by a dialog.
 
 Later same-user filesystem tampering with an already-installed managed CLI is **explicitly outside
 the threat model**: there is no runtime attestation, per-launch hashing, or signed receipt, because
 a process running as the user could defeat any of them. `happierCli.ts` additionally enforces one version floor
 (`SETUP_CLI_VERSION_FLOOR`) so setup drives a CLI whose command contract it knows; below the floor
-a managed CLI is reacquired once and then fails by name, and an override CLI fails immediately
-without reacquisition.
+an installed managed CLI uses the recoverable update transaction in current development source,
+and an override CLI fails immediately. The prepared target must satisfy the floor before activation.
 
 ### One default channel per Happier home
 
@@ -260,7 +275,9 @@ holding its `daemon.state.json` and `daemon.state.json.lock` — and only that s
 `runManagedCliUpdate` (`packages/cli-common/src/firstPartyRuntime/runManagedCliUpdate.ts`) is the
 only way a managed first-party CLI is updated in place. `happier self update`, the desktop's
 bootstrap `cli.update.v1` and the daemon-hosted remote `cli.update.v1` all run it, always from the
-version being replaced:
+version being replaced. Current development source also uses it for desktop setup's replacement
+of an installed managed CLI below the setup floor; the bootstrap adapter rejects a below-floor
+target before activation and shares the explicit update's service observation/restart planner:
 
 1. **Admission.** The transaction first takes both locks described in step 4 — before it downloads
    anything — so a concurrent update is refused at once and never downloads, and a caller learns
@@ -338,8 +355,8 @@ not end sessions, but it is unverified on a real Windows host. Remote update is 
 (below).
 
 **Rolling back across a migration.** The previous version must read whatever the new one wrote
-before it failed. Every predecessor that can run this transaction is ≥ 0.2.13 (the transaction
-ships in the CLI and in the desktop's hsetup, whose setup floor is 0.2.13), and the persisted
+before it failed. CLI self-update callers are ≥ 0.2.13; current desktop hsetup can also replace
+an installed 0.2.12 CLI to satisfy its 0.2.13 setup floor. The persisted
 formats a new daemon may migrate at start are forward-tolerant within 0.2 (settings
 `SUPPORTED_SCHEMA_VERSION` 6 is unchanged since 0.2.12 and a newer schema only logs a warning). No
 0.2 release forbids rollback; the first release whose migration an older reader cannot read must add
@@ -371,6 +388,11 @@ republished by the still-running daemon when the updater records it. npm/Homebre
 (`cli_not_managed`). Windows reports `canUpdateRemotely: false`: its update stops the payload's
 processes with `taskkill /T`, which would end the updater (a descendant of the daemon), and Task
 Scheduler's treatment of a detached descendant across `/End` is unverified.
+
+Current development UI preserves an explicit failed outcome even when its target version is the
+version answering now; version equality can settle a pending reconnect, but does not prove service
+recovery. The Updates row's session-restart note follows the item's machine identity, including
+this computer.
 
 ### App → CLI, with no ambient fallback
 
@@ -432,6 +454,13 @@ refresh. Settings ›
 This computer › Command line names the answer ("Managed by Happier" / "Your own — path"), shows the
 old copy's removal command after **manage**, and its change action reruns the same setup run with
 `reconsiderCli: true`.
+
+In current development source, when the active relay is served by a user-owned pin, that action
+adds `cliOnly: true` to the same bundled executor. It asks and records the home-wide CLI choice,
+resolves the selected CLI and uses the existing PATH owner, then skips relay, authentication and
+service convergence. The result reports `machineId: null` and `serviceAction: none`; it supplies
+no readiness proof. `cliOnly` requires `reconsiderCli: true`. Managed acquisition and any required
+below-floor upgrade retain their existing owners and update/restart contract.
 
 `auth status` and the daemon status block of `happier daemon status` name the relay by host and the
 signed-in account by its readable label (profile username, else display name) and a short id, and
@@ -736,7 +765,8 @@ background service per relay (`happier daemon service list --json` / `daemon sta
 - **Only desktop-managed services are driven.** Only `managedBy: desktop` pinned services are
   started, stopped or given a login-start mode by the app. A pinned service the user set up is shown
   in "this computer" status but never driven: the move policy returns `leave_user_service` and
-  nothing is launched for it.
+  no relay convergence is launched for it. An explicit Settings CLI-choice action can still change
+  this home's command line through the bounded `cliOnly` intent described above.
 - **One login-start setting governs every app-managed service.**
   - A pinned service is installed with the default-following service's autostart mode.
   - `daemon.service.autostart.set.v1` and `daemon.service.stop.v1` act on each managed service and
