@@ -4406,7 +4406,7 @@ export const de: TranslationStructure = {
 
     settingsNotifications: {
         mutePhoneWhenComputerFocusedTitle: "Handy stummschalten, wenn ein Computer fokussiert ist",
-        mutePhoneWhenComputerFocusedSubtitle: "Ready- und Anfrage-Pushs stummschalten, solange ein Happier-Fenster auf einem Computer fokussiert ist. Sie werden wieder zugestellt, wenn kein Computer-Fenster fokussiert ist.",
+        mutePhoneWhenComputerFocusedSubtitle: "Ready- und Anfrage-Pushs stummschalten, solange ein Happier-Fenster auf einem Computer fokussiert ist. Neue Ready- und Anfrage-Pushs werden wieder zugestellt, sobald kein Happier-Fenster auf einem Computer mehr fokussiert ist.",
         pageDescription: 'Wähle, was dich benachrichtigt, wo und wann Ruhe herrscht.',
         remoteAlerts: {
             title: "Sitzungsalarme bei geschlossener App",
