@@ -80,7 +80,7 @@ describe('QuotaRingInstrument', () => {
         vi.restoreAllMocks();
     });
 
-    it('shows one remaining-first ring, then each pinned meter as its own ring with optional labels', async () => {
+    it('shows one remaining-first ring and names each pinned extra ring', async () => {
         const pinnedViewModel: ViewModel = {
             ...VIEW_MODEL,
             usageRings: [
@@ -100,8 +100,8 @@ describe('QuotaRingInstrument', () => {
         expect(text('session-instrument-quota-ring-value:seven_day')).toBe('10');
         expect(container.querySelector('[data-testid="session-instrument-quota-ring"]')!.getAttribute('aria-label'))
             .toContain('Weekly 10% left');
-        // Labels are opt-in; the provider caption under the ring stays.
-        expect(container.querySelector('[data-testid^="session-instrument-quota-meter-label"]')).toBeNull();
+        expect(text('session-instrument-quota-meter-label')).toBe('5-hour');
+        expect(text('session-instrument-quota-meter-label:seven_day')).toBe('Weekly');
         expect(container.textContent).toContain('Claude');
 
         await renderRing({ viewModel: pinnedViewModel, showLabels: true });

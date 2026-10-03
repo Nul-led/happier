@@ -50,8 +50,8 @@ export type ConnectedServiceQuotaRecoveryCreditSummary = Readonly<{
 export type ConnectedServiceQuotaGaugeMeterRow = Readonly<{
     meterId: string;
     label: string;
-    remainingPct: number;
-    usedPct: number;
+    remainingPct: number | null;
+    usedPct: number | null;
     detailRightSemantics: 'remaining';
     detailRightLabel: string;
     usedLimitSemantics: 'used' | null;
@@ -288,7 +288,7 @@ export function summarizeConnectedServiceQuotaRecoveryCredits(
 }
 
 /** The gauge's vocabulary for the one quota tone owner's answer; a healthy gauge stays quiet. */
-function resolveTone(remainingPct: number): ConnectedServiceQuotaGaugeTone {
+function resolveTone(remainingPct: number | null): ConnectedServiceQuotaGaugeTone {
     const tone = resolveQuotaTone(remainingPct);
     if (tone === 'danger') return 'critical';
     if (tone === 'warning') return 'warning';
@@ -301,13 +301,11 @@ function buildMeterRow(
     formatter: ConnectedServiceQuotaGaugeLabelFormatter,
 ): ConnectedServiceQuotaGaugeMeterRow | null {
     const usedPct = deriveQuotaUtilizationPct(meter);
-    if (usedPct === null) return null;
 
     const remainingPct = typeof meter.remainingPct === 'number' && Number.isFinite(meter.remainingPct)
         ? clampQuotaPct(meter.remainingPct)
-        : clampQuotaPct(100 - usedPct);
-    const roundedRemaining = Math.round(remainingPct);
-    const remainingLabel = `${roundedRemaining}%`;
+        : usedPct === null ? null : clampQuotaPct(100 - usedPct);
+    const remainingLabel = remainingPct === null ? '—' : `${Math.round(remainingPct)}%`;
     const resetLabel = formatResetCountdown(nowMs, meter.resetAtMs ?? meter.resetsAt, formatter);
     return {
         meterId: meter.meterId,
@@ -379,7 +377,7 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
     if (!effectiveMeter || !Number.isFinite(effectiveRemainingPct)) return null;
 
     const selectedRow = buildMeterRow(effectiveMeter, params.nowMs, params.formatter);
-    if (!selectedRow) return null;
+    if (!selectedRow || selectedRow.usedPct === null) return null;
 
     const snapshotMeters = params.snapshot.meters;
     const displayedMeterRows = [...new Set([effectiveMeter.meterId, ...(params.additionalMeterIds ?? [])])].flatMap((meterId) => {
@@ -387,11 +385,17 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         const meter = snapshotMeters.find((candidate) => candidate.meterId === meterId
             && isConnectedServiceQuotaMeterPercentRankable(candidate));
         const row = meter ? buildMeterRow(meter, params.nowMs, params.formatter) : null;
-        return row ? [row] : [];
+        return row && row.usedPct !== null && row.remainingPct !== null
+            ? [{ ...row, usedPct: row.usedPct, remainingPct: row.remainingPct }] : [];
     });
-    // Keep the main comparison family first; every displayed extra also gets its detail row.
-    for (const row of displayedMeterRows) {
-        if (!allMeterRows.some((existing) => existing.meterId === row.meterId)) allMeterRows.push(row);
+    // Details retain every reported usage/rate window, including unknown percentages.
+    // The comparable numeric family alone selects the main composer ring.
+    for (const meter of snapshotMeters) {
+        const category = readPublicLimitCategory(meter);
+        if ((category && !['usage_limit', 'rate_limit'].includes(category))
+            || allMeterRows.some((existing) => existing.meterId === meter.meterId)) continue;
+        const row = buildMeterRow(meter, params.nowMs, params.formatter);
+        if (row) allMeterRows.push(row);
     }
 
     const selectedWindowPrefix = params.windowMode === 'most_constrained'

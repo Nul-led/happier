@@ -31,7 +31,7 @@ export type QuotaRingInstrumentProps = Readonly<{
     recoveryCreditPending?: boolean;
     /** Show the provider caption under the ring (≥360px available width). */
     showProviderGlyph: boolean;
-    /** Name each ring with its usage window (an opt-in setting, off by default). */
+    /** Also name a lone ring; multiple rings always show their usage windows. */
     showLabels?: boolean;
     testID?: string;
 }>;
@@ -85,7 +85,7 @@ export const QuotaRingInstrument = React.memo(function QuotaRingInstrument(props
                             const testIDSuffix = index === 0 ? '' : `:${ring.meterId}`;
                             return (
                                 <View key={ring.meterId} style={styles.ring}>
-                                    {props.showLabels === true ? (
+                                    {props.showLabels === true || rings.length > 1 ? (
                                         <Text
                                             testID={`session-instrument-quota-meter-label${testIDSuffix}`}
                                             style={instrumentStripStyles.instrumentLabelText}

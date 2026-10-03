@@ -100,7 +100,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
                 meter({ meterId: 'daily', label: 'Daily', used: 70, limit: 100 }),
                 meter({ meterId: 'weekly', label: 'Weekly', used: 88, limit: 100 }),
                 meter({ meterId: 'capacity', label: 'Capacity', used: 99, limit: 100, details: capacityDetails }),
-                meter({ meterId: 'auth', label: 'Auth', used: 99, limit: 100, status: 'unavailable' }),
+                meter({ meterId: 'auth', label: 'Auth', used: 99, limit: 100, status: 'unavailable', details: { limitCategory: 'auth_invalid' } }),
             ]),
             windowMode: 'most_constrained',
             nowMs: 2_000,
@@ -120,6 +120,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
                 meter({ meterId: 'weekly', label: 'Weekly', used: 82, limit: 100, unit: 'count', details: { limitCategory: 'usage_limit' } }),
                 meter({ meterId: 'daily', label: 'Daily', used: 50, limit: 100, unit: 'count', details: { limitCategory: 'usage_limit' } }),
                 meter({ meterId: 'requests', label: 'Requests', used: 99, limit: 100, unit: 'requests', details: { limitCategory: 'rate_limit' } }),
+                meter({ meterId: 'reached', label: 'Reached', status: 'unavailable', resetsAt: 9_000, details: { limitCategory: 'usage_limit' } }),
                 meter({ meterId: 'server_capacity', label: 'Server capacity', used: 100, limit: 100, unit: 'requests', details: { limitCategory: 'capacity' } }),
             ]),
             windowMode: 'most_constrained',
@@ -128,7 +129,9 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         });
 
         expect(viewModel?.effectiveMeter.meterId).toBe('weekly');
-        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly', 'daily']);
+        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly', 'daily', 'requests', 'reached']);
+        expect(viewModel?.allMeterRows.find((row) => row.meterId === 'reached')).toMatchObject({ remainingPct: null, usedPct: null, resetsAt: 9_000 });
+        expect(viewModel?.usageRings.map((ring) => ring.meterId)).toEqual(['weekly']);
     });
 
     it('keeps daily and weekly windows separate when explicitly selected', () => {
