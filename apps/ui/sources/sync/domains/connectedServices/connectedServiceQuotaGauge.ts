@@ -382,9 +382,13 @@ export function computeConnectedServiceQuotaGaugeViewModel(_params: Readonly<{
         const row = meter ? buildMeterRow(meter, params.nowMs, params.formatter) : null;
         return row && meter ? [{ meter, row }] : [];
     });
-    // Keep the main comparison family first; every displayed extra has the same detail row.
-    for (const { row } of displayedMeterRows) {
-        if (!allMeterRows.some((existing) => existing.meterId === row.meterId)) allMeterRows.push(row);
+    // Details keep every reliable reported usage window, independently of composer pins.
+    // The main comparison family stays first and alone decides the default ring.
+    for (const meter of params.snapshot.meters) {
+        if (!isConnectedServiceQuotaMeterPercentRankable(meter)
+            || allMeterRows.some((existing) => existing.meterId === meter.meterId)) continue;
+        const row = buildMeterRow(meter, params.nowMs, params.formatter);
+        if (row) allMeterRows.push(row);
     }
 
     const selectedWindowPrefix = params.windowMode === 'most_constrained'

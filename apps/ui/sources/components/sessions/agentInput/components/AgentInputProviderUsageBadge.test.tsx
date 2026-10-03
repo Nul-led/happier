@@ -106,6 +106,8 @@ describe('AgentInputProviderUsageBadge', () => {
         const aggregate = String(screen.findByTestId('agent-input-provider-usage-badge')?.props.accessibilityLabel);
         expect(aggregate).toContain('Weekly 18% left');
         expect(aggregate).toContain('Requests 70% left');
+        expect(screen.findByTestId('agent-input-provider-usage-meter-label')?.props.children).toBe('Weekly');
+        expect(screen.findByTestId('agent-input-provider-usage-meter-label:requests')?.props.children).toBe('Requests');
         act(() => { screen.findByTestId('agent-input-provider-usage-badge')?.props.onPress?.(); });
         expect(screen.findByTestId('agent-input-provider-usage-meter:requests')).toBeTruthy();
     });

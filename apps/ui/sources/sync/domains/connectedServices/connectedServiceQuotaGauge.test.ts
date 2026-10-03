@@ -190,7 +190,7 @@ describe('computeConnectedServiceQuotaGaugeViewModel', () => {
         });
 
         expect(viewModel?.effectiveMeter.meterId).toBe('weekly');
-        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly', 'daily']);
+        expect(viewModel?.allMeterRows.map((row) => row.meterId)).toEqual(['weekly', 'daily', 'requests']);
     });
 
     it('keeps daily and weekly windows separate when explicitly selected', () => {

@@ -193,7 +193,7 @@ export const AgentInputProviderUsageBadge = React.memo(function AgentInputProvid
                     const testIdSuffix = index === 0 ? '' : `:${ring.meterId}`;
                     return (
                         <View key={ring.meterId} style={styles.windowRing}>
-                            {props.showLabels === true ? (
+                            {props.showLabels === true || rings.length > 1 ? (
                                 <Text
                                     testID={`agent-input-provider-usage-meter-label${testIdSuffix}`}
                                     style={styles.windowLabel}
