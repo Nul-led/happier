@@ -104,13 +104,14 @@ describe('happier auth status --json', () => {
           const parsed = JSON.parse(raw) as {
             ok: boolean;
             kind: string;
-            data?: { authenticated?: boolean; accountId?: string | null; machineId?: string; token?: string };
+            data?: { authenticated?: boolean; accountId?: string | null; machineId?: string; token?: string; serverId?: string };
           };
           expect(parsed.ok).toBe(true);
           expect(parsed.kind).toBe('auth_status');
           expect(parsed.data?.authenticated).toBe(true);
           expect(parsed.data?.accountId).toBe('account-1');
           expect(parsed.data?.machineId).toBe('mid_123');
+          expect(parsed.data?.serverId).toBe(configuration.activeServerId);
           expect(parsed.data?.token).toBeUndefined();
           expect(raw).not.toContain(token);
           expect(process.exitCode).toBe(0);

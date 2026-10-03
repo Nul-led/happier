@@ -71,6 +71,10 @@ function normalizeServerUrl(url: string): string {
   return String(url ?? '').trim().replace(/\/+$/, '');
 }
 
+export function resolveServerProfileApiUrl(profile: Readonly<{ serverUrl: string; localServerUrl?: string }>): string {
+  return normalizeServerUrl(profile.localServerUrl ?? '') || normalizeServerUrl(profile.serverUrl);
+}
+
 function safeCreateComparableServerUrlKey(url: string | null | undefined): string {
   const value = String(url ?? '').trim();
   if (!value) return '';
@@ -119,7 +123,7 @@ export function resolveServerSelection(params: Readonly<{
       : null;
     if (explicitActivePersisted && !matchesUrl(explicitActivePersisted, envCanonicalServerUrl)) {
       const canonical = normalizeServerUrl(explicitActivePersisted.serverUrl);
-      const apiServerUrl = normalizeServerUrl(explicitActivePersisted.localServerUrl ?? '') || canonical;
+      const apiServerUrl = resolveServerProfileApiUrl(explicitActivePersisted);
       return {
         activeServerId: resolveActiveServerId(explicitActivePersisted.id),
         serverUrl: canonical,
@@ -219,7 +223,7 @@ export function resolveServerSelection(params: Readonly<{
     const active = params.persisted.servers[params.persisted.activeServerId];
     if (active) {
       const canonical = normalizeServerUrl(active.serverUrl);
-      const apiServerUrl = normalizeServerUrl(active.localServerUrl ?? '') || canonical;
+      const apiServerUrl = resolveServerProfileApiUrl(active);
       return {
         activeServerId: resolveActiveServerId(active.id),
         serverUrl: canonical,

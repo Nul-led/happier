@@ -222,6 +222,7 @@ export async function buildDoctorRepairReport(params: Readonly<{
       credentialState: s.credentialState,
       machineRegistered: s.machineRegistered,
       isActive: s.isActive,
+      ...(s.isRuntimeOnly ? { isRuntimeOnly: true } : {}),
     })),
     hasAnyServerProfile: params.hasAnyServerProfile,
     findings,

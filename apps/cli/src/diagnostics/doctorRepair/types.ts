@@ -22,15 +22,17 @@ export type DoctorRepairReport = Readonly<{
   manualWarnings: readonly string[];
 }>;
 
-/**
- * Per-server-profile auth snapshot rendered in the Authentication section.
- * Mirrors `AuthSignalsForProfile` but lives in the report shape so the
- * renderer doesn't reach back into the classifier.
- */
-export type AuthProfileSnapshot = Readonly<{
+/** Target shared by auth snapshots and repair findings. */
+type AuthProfileTarget = Readonly<{
   serverId: string;
   serverName: string;
   serverUrl: string;
+  /** Invocation-selected Home without a saved profile that `--server` can resolve. */
+  isRuntimeOnly?: boolean;
+}>;
+
+/** Per-Home auth snapshot shared by the resolver, classifier and Authentication section. */
+export type AuthProfileSnapshot = AuthProfileTarget & Readonly<{
   credentialState: 'missing' | 'valid' | 'invalid' | 'unknown' | 'stored-unverified';
   machineRegistered: boolean;
   isActive: boolean;
@@ -376,25 +378,16 @@ export type NoServersConfigured = RepairFindingBase & Readonly<{
   kind: 'no_servers_configured';
 }>;
 
-export type AuthMissingForProfile = RepairFindingBase & Readonly<{
+export type AuthMissingForProfile = RepairFindingBase & AuthProfileTarget & Readonly<{
   kind: 'auth_missing_for_profile';
-  serverId: string;
-  serverName: string;
-  serverUrl: string;
 }>;
 
-export type AuthExpiredForActiveProfile = RepairFindingBase & Readonly<{
+export type AuthExpiredForActiveProfile = RepairFindingBase & AuthProfileTarget & Readonly<{
   kind: 'auth_expired_for_active_profile';
-  serverId: string;
-  serverName: string;
-  serverUrl: string;
 }>;
 
-export type MachineNotRegisteredForProfile = RepairFindingBase & Readonly<{
+export type MachineNotRegisteredForProfile = RepairFindingBase & AuthProfileTarget & Readonly<{
   kind: 'machine_not_registered_for_profile';
-  serverId: string;
-  serverName: string;
-  serverUrl: string;
 }>;
 
 /**

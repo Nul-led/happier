@@ -1,21 +1,13 @@
 import type {
   AuthExpiredForActiveProfile,
   AuthMissingForProfile,
+  AuthProfileSnapshot,
   MachineNotRegisteredForProfile,
   NoServersConfigured,
   RepairFinding,
 } from './types';
 
-export type AuthSignalsForProfile = Readonly<{
-  serverId: string;
-  serverName: string;
-  serverUrl: string;
-  credentialState: 'missing' | 'valid' | 'invalid' | 'unknown' | 'stored-unverified';
-  /** True if a machine id has been confirmed for this profile. */
-  machineRegistered: boolean;
-  /** True if this profile is the currently active one. */
-  isActive: boolean;
-}>;
+export type AuthSignalsForProfile = AuthProfileSnapshot;
 
 /**
  * Emit auth-related repair findings.
@@ -61,6 +53,7 @@ export function classifyAuth(params: Readonly<{
         serverId: active.serverId,
         serverName: active.serverName,
         serverUrl: active.serverUrl,
+        ...(active.isRuntimeOnly ? { isRuntimeOnly: true } : {}),
       };
       findings.push(finding);
     } else if (active.credentialState === 'invalid') {
@@ -71,6 +64,7 @@ export function classifyAuth(params: Readonly<{
         serverId: active.serverId,
         serverName: active.serverName,
         serverUrl: active.serverUrl,
+        ...(active.isRuntimeOnly ? { isRuntimeOnly: true } : {}),
       };
       findings.push(finding);
     } else if (active.credentialState === 'valid' && !active.machineRegistered) {
@@ -81,6 +75,7 @@ export function classifyAuth(params: Readonly<{
         serverId: active.serverId,
         serverName: active.serverName,
         serverUrl: active.serverUrl,
+        ...(active.isRuntimeOnly ? { isRuntimeOnly: true } : {}),
       };
       findings.push(finding);
     }
