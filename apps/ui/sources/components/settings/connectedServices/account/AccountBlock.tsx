@@ -10,7 +10,6 @@ import type { ComposedGesture, GestureType } from 'react-native-gesture-handler'
 import { buildQuotaResetRows } from '@/sync/domains/connectedServices/buildQuotaResetRows';
 import {
     buildConnectedServiceQuotaGaugeMeterRows,
-    computeConnectedServiceQuotaGaugeViewModel,
     type ConnectedServiceQuotaGaugeLabelFormatter,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
 import { type ResetCountdownDaysFormatter } from '@/sync/domains/connectedServices/formatResetCountdown';
@@ -24,7 +23,7 @@ import {
 } from '@happier-dev/protocol';
 import { t } from '@/text';
 
-import { resolveAccountUsageRows } from './accountBlockModel';
+import { resolveAccountCapacityView, resolveAccountUsageRows } from './accountBlockModel';
 import {
     AccountBlockView,
     defaultAccountBlockTestID,
@@ -136,19 +135,11 @@ function buildQuotaView(
     const { snapshot, nowMs } = hook;
     const displaySnapshot = projectConnectedServiceQuotaSnapshotForLimitSelection(snapshot, quotaLimitSelection);
 
-    const gauge = displaySnapshot
-        ? computeConnectedServiceQuotaGaugeViewModel({
-            snapshot: displaySnapshot,
-            windowMode: 'most_constrained',
-            nowMs,
-            formatter: GAUGE_LABEL_FORMATTER,
-        })
-        : null;
+    const capacity = resolveAccountCapacityView(displaySnapshot?.meters ?? [], nowMs, GAUGE_LABEL_FORMATTER);
 
     const usageRows = resolveAccountUsageRows(displaySnapshot
         ? buildConnectedServiceQuotaGaugeMeterRows(displaySnapshot.meters, nowMs, GAUGE_LABEL_FORMATTER)
         : []);
-    const capacityPct = gauge?.remainingPct ?? null;
     const resetRows = hook.canConsumeRecoveryCredit
         ? buildQuotaResetRows(snapshot?.recoveryCredits, nowMs, RESET_COUNTDOWN_DAYS_FORMATTER)
         : [];
@@ -164,7 +155,8 @@ function buildQuotaView(
         refresh: hook.refresh,
         planLabel: snapshot?.planLabel ?? null,
         usageRows,
-        capacityPct,
+        capacityPct: capacity.capacityPct,
+        capacityRings: capacity.rings,
         resetRows,
         resetAvailableCount: hook.canConsumeRecoveryCredit
             ? hook.recoveryCreditSummary?.availableCount ?? 0

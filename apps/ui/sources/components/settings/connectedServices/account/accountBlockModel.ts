@@ -1,9 +1,16 @@
 import type { UnistylesThemes } from 'react-native-unistyles';
+import type { ConnectedServiceQuotaMeterV1 } from '@happier-dev/protocol';
 
 import type { MeterTone } from '@/components/ui/lists/MeterBar';
 import type { StatusPillVariant } from '@/components/ui/status/StatusPill';
 import type { AccountHealth } from '@/sync/domains/connectedServices/deriveAccountHealth';
-import type { ConnectedServiceQuotaGaugeMeterRow } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
+import {
+    buildConnectedServiceQuotaGaugeMeterRows,
+    selectComparableConnectedServiceQuotaMeters,
+    type ConnectedServiceQuotaGaugeMeterRow,
+    type ConnectedServiceQuotaGaugeLabelFormatter,
+} from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
+import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
 import { resolveQuotaTone } from '@/sync/domains/connectedServices/resolveQuotaTone';
 import { resolveQuotaToneColor } from '@/sync/domains/connectedServices/resolveQuotaToneColor';
 
@@ -82,6 +89,21 @@ export function resolveAccountHealthDotColor(theme: Theme, health: AccountHealth
 
 /** One concentric capacity-ring: `ratio` is the remaining-capacity fraction it fills. */
 export type CapacityRingDatum = Readonly<{ ratio: number; tone: MeterTone }>;
+
+/** Display-only windows never become capacity candidates; the gauge owner chooses the family. */
+export function resolveAccountCapacityView(
+    meters: readonly ConnectedServiceQuotaMeterV1[],
+    nowMs: number,
+    formatter: ConnectedServiceQuotaGaugeLabelFormatter,
+): Readonly<{ capacityPct: number | null; rings: CapacityRingDatum[] }> {
+    const rows = buildConnectedServiceQuotaGaugeMeterRows(
+        selectComparableConnectedServiceQuotaMeters(meters), nowMs, formatter,
+    );
+    return {
+        capacityPct: deriveAccountCapacityPct(rows),
+        rings: resolveAccountCapacityRings(resolveAccountUsageRows(rows)),
+    };
+}
 
 /**
  * Beyond this the avatar's concentric rings become illegibly thin, so we only
