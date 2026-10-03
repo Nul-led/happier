@@ -6419,6 +6419,7 @@ export const fr: TranslationStructure = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
+            badgeLabel: 'Contexte',
             windowTitle: 'Fenêtre de contexte',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} de contexte utilisé`,
@@ -7821,11 +7822,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Usage du provider',
-              footer: 'Contrôle la jauge de quota affichée à côté du composer quand l’usage du provider est fiable.',
+              footer: 'Contrôle la jauge de quota affichée à côté du composer quand l’usage du provider est fiable. Épinglez une fenêtre d’usage sur un compte connecté pour l’afficher comme jauge supplémentaire.',
               visibilityTitle: 'Afficher la jauge d’usage du provider',
               visibilityEnabledSubtitle: 'Affiche le quota restant du provider à côté du composer quand il est disponible.',
               visibilityHiddenSubtitle: 'Masque le quota du provider près du composer.',
               windowTitle: 'Fenêtre de la jauge',
+              labelsTitle: 'Afficher les libellés d’utilisation',
+              labelsSubtitle: 'Nommer les indicateurs de contexte et du fournisseur.',
               windowMostConstrainedTitle: 'La plus contrainte',
               windowMostConstrainedSubtitle: 'Affiche la fenêtre de quota fiable où il reste le moins de quota.',
               windowDailyTitle: 'Quotidienne',

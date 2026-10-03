@@ -6835,6 +6835,7 @@ export const pl: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `Pozostało ${percent}%`,
+      badgeLabel: "Kontekst",
       windowTitle: "Okno kontekstu",
       usedDetail: ({
         percent,
@@ -8289,12 +8290,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Użycie dostawcy",
         footer:
-          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy.",
+          "Steruje wskaźnikiem limitu obok pola wpisywania, gdy dostępne są wiarygodne dane użycia dostawcy. Przypnij okno użycia na połączonym koncie, aby pokazać je jako dodatkowy wskaźnik.",
         visibilityTitle: "Pokaż wskaźnik użycia dostawcy",
         visibilityEnabledSubtitle:
           "Pokazuj pozostały limit dostawcy obok pola wpisywania, gdy jest dostępny.",
         visibilityHiddenSubtitle: "Ukryj limit dostawcy przy polu wpisywania.",
         windowTitle: "Okno wskaźnika",
+        labelsTitle: 'Pokaż etykiety użycia',
+        labelsSubtitle: 'Wyświetlaj etykiety wskaźników kontekstu i dostawcy.',
         windowMostConstrainedTitle: "Najbardziej ograniczone",
         windowMostConstrainedSubtitle:
           "Pokazuj wiarygodne okno limitu z najmniejszym pozostałym limitem.",

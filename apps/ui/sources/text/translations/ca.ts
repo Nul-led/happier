@@ -6431,6 +6431,7 @@ deps: {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
+            badgeLabel: 'Context',
             windowTitle: 'Finestra de context',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} de context utilitzat`,
@@ -7838,11 +7839,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Ús del proveïdor',
-              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor.',
+              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor. Fixa una finestra d’ús en un compte connectat per mostrar-la com a indicador addicional.',
               visibilityTitle: 'Mostra l’indicador d’ús del proveïdor',
               visibilityEnabledSubtitle: 'Mostra la quota restant del proveïdor al costat del compositor quan estigui disponible.',
               visibilityHiddenSubtitle: 'Amaga la quota del proveïdor al compositor.',
               windowTitle: 'Finestra de l’indicador',
+              labelsTitle: 'Mostra les etiquetes d’ús',
+              labelsSubtitle: 'Etiqueta els indicadors de context i del proveïdor.',
               windowMostConstrainedTitle: 'Més limitada',
               windowMostConstrainedSubtitle: 'Mostra la finestra de quota fiable amb menys quota restant.',
               windowDailyTitle: 'Diària',

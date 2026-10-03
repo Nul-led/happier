@@ -6462,6 +6462,7 @@ export const en = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% left`,
+            badgeLabel: 'Context',
             windowTitle: 'Context Window',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} context used`,
@@ -7864,11 +7865,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider usage',
-              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available.',
+              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available. Pin a usage window on a connected account to show it as an extra gauge.',
               visibilityTitle: 'Show provider usage gauge',
               visibilityEnabledSubtitle: 'Show remaining provider quota next to the composer when available.',
               visibilityHiddenSubtitle: 'Hide provider quota from the composer.',
               windowTitle: 'Gauge window',
+              labelsTitle: 'Show usage labels',
+              labelsSubtitle: 'Label context and provider gauges above the composer.',
               windowMostConstrainedTitle: 'Most constrained',
               windowMostConstrainedSubtitle: 'Show the reliable quota window with the least remaining quota.',
               windowDailyTitle: 'Daily',

@@ -3842,6 +3842,8 @@ function SessionViewLoaded({
     });
     const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(sessionId);
     const attachmentsUploadsEnabled = attachmentsUploadsFeatureEnabled && attachmentsUploadsTransferAvailable;
+    // An account's pinned meters double as its extra composer gauges.
+    const pinnedQuotaMeterIdsByKey = useSetting('connectedServicesQuotaPinnedMeterIdsByKey');
     const sessionProviderUsageGaugeMode = useSetting('sessionProviderUsageGaugeMode');
     const sessionProviderUsageGaugeWindowModeSetting = useSetting('sessionProviderUsageGaugeWindowMode');
     const sessionProviderUsageGaugeWindowMode: ConnectedServiceQuotaGaugeWindowMode =
@@ -4151,6 +4153,10 @@ function SessionViewLoaded({
         return computeConnectedServiceQuotaGaugeViewModel({
             snapshot: gaugeSource.snapshot,
             windowMode: sessionProviderUsageGaugeWindowMode,
+            additionalMeterIds: connectedServiceQuotaProfileRef
+                && isConnectedServiceBoundProviderUsageDisplaySource(providerUsageDisplaySnapshotSource)
+                ? pinnedQuotaMeterIdsByKey[connectedServiceProfileKey(connectedServiceQuotaProfileRef)] ?? []
+                : [],
             nowMs: nowServerMs(),
             formatter: connectedServiceQuotaGaugeFormatter,
             providerDisplayName: resolveConnectedServiceProviderDisplayName(gaugeSource.snapshot.serviceId),
@@ -4164,6 +4170,8 @@ function SessionViewLoaded({
         connectedServiceQuotaDisplaySnapshot,
         providerUsageDisplaySnapshotSource?.kind,
         providerUsageGaugeSource,
+        connectedServiceQuotaProfileRef,
+        pinnedQuotaMeterIdsByKey,
         sessionProviderUsageGaugeWindowMode,
     ]);
     const providerUsageGaugeConnectedServiceProfileRef =

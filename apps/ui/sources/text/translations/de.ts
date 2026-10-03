@@ -6432,6 +6432,7 @@ export const de: TranslationStructure = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `${percent}% übrig`,
+            badgeLabel: 'Kontext',
             windowTitle: 'Kontextfenster',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • ${used}/${total} Kontext genutzt`,
@@ -7834,11 +7835,13 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider-Nutzung',
-              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen.',
+              footer: 'Steuert die Kontingentanzeige neben dem Composer, wenn verlässliche Provider-Nutzungsdaten vorliegen. Hefte ein Nutzungsfenster an einem verbundenen Konto an, um es als zusätzliche Anzeige zu zeigen.',
               visibilityTitle: 'Nutzungsanzeige des Providers zeigen',
               visibilityEnabledSubtitle: 'Das verbleibende Provider-Kontingent neben dem Composer zeigen, wenn verfügbar.',
               visibilityHiddenSubtitle: 'Das Provider-Kontingent im Composer ausblenden.',
               windowTitle: 'Anzeigefenster',
+              labelsTitle: 'Nutzungsbeschriftungen anzeigen',
+              labelsSubtitle: 'Kontext- und Anbieternutzung am Eingabefeld beschriften.',
               windowMostConstrainedTitle: 'Am stärksten begrenzt',
               windowMostConstrainedSubtitle: 'Das verlässliche Kontingentfenster mit dem geringsten Rest zeigen.',
               windowDailyTitle: 'Täglich',

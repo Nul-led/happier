@@ -5686,6 +5686,7 @@ const zhHantOverrides: DeepPartial<TranslationStructure> = {
         },
         context: {
             remaining: ({ percent }: { percent: number }) => `剩餘 ${percent}%`,
+            badgeLabel: '上下文',
             windowTitle: '上下文視窗',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
                 `${percent} • 已使用 ${used}/${total} 上下文`,
@@ -6974,11 +6975,13 @@ settingsSession: {
         },
         providerUsageGauge: {
             title: '提供者使用量',
-            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。',
+            footer: '當有可靠的提供者使用量資料時，控制輸入框旁顯示的配額儀表。在已連結的帳戶中釘選一個使用量視窗，即可將其顯示為額外的儀表。',
             visibilityTitle: '顯示提供者使用量儀表',
             visibilityEnabledSubtitle: '可用時在輸入框旁顯示提供者剩餘配額。',
             visibilityHiddenSubtitle: '在輸入框旁隱藏提供者配額。',
             windowTitle: '儀表視窗',
+            labelsTitle: '顯示用量標籤',
+            labelsSubtitle: '為上下文和提供者用量儀表顯示標籤。',
             windowMostConstrainedTitle: '最受限制',
             windowMostConstrainedSubtitle: '顯示可靠配額視窗中剩餘最少的視窗。',
             windowDailyTitle: '每日',

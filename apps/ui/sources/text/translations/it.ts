@@ -7157,6 +7157,7 @@ export const it: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contesto",
       windowTitle: "Finestra di contesto",
       usedDetail: ({
         percent,
@@ -8617,12 +8618,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del provider",
         footer:
-          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider.",
+          "Controlla l'indicatore di quota mostrato accanto al compositore quando è disponibile un uso affidabile del provider. Fissa una finestra di utilizzo su un account collegato per mostrarla come indicatore aggiuntivo.",
         visibilityTitle: "Mostra l'indicatore di uso del provider",
         visibilityEnabledSubtitle:
           "Mostra la quota restante del provider accanto al compositore quando disponibile.",
         visibilityHiddenSubtitle: "Nascondi la quota del provider dal compositore.",
         windowTitle: "Finestra dell'indicatore",
+        labelsTitle: 'Mostra le etichette di utilizzo',
+        labelsSubtitle: 'Etichetta gli indicatori di contesto e del provider.',
         windowMostConstrainedTitle: "Più vincolata",
         windowMostConstrainedSubtitle:
           "Mostra la finestra di quota affidabile con meno quota restante.",

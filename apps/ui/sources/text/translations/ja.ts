@@ -7087,6 +7087,7 @@ localTailscale: {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `残り ${percent}%`,
+      badgeLabel: "コンテキスト",
       windowTitle: "コンテキストウィンドウ",
       usedDetail: ({
         percent,
@@ -8535,12 +8536,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "プロバイダー使用量",
         footer:
-          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。",
+          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。接続済みアカウントで使用量ウィンドウをピン留めすると、追加のゲージとして表示されます。",
         visibilityTitle: "プロバイダー使用量ゲージを表示",
         visibilityEnabledSubtitle:
           "利用可能な場合、入力欄の横にプロバイダーの残りクォータを表示します。",
         visibilityHiddenSubtitle: "入力欄のプロバイダークォータを非表示にします。",
         windowTitle: "ゲージの期間",
+        labelsTitle: '使用量ラベルを表示',
+        labelsSubtitle: 'コンテキストとプロバイダーの使用量にラベルを表示します。',
         windowMostConstrainedTitle: "最も制約が強い",
         windowMostConstrainedSubtitle:
           "信頼できるクォータ期間のうち残りが最も少ないものを表示します。",

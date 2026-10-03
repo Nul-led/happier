@@ -9,10 +9,9 @@ import type { ComposedGesture, GestureType } from 'react-native-gesture-handler'
 
 import { buildQuotaResetRows } from '@/sync/domains/connectedServices/buildQuotaResetRows';
 import {
-    computeConnectedServiceQuotaGaugeViewModel,
+    buildConnectedServiceQuotaGaugeMeterRows,
     type ConnectedServiceQuotaGaugeLabelFormatter,
 } from '@/sync/domains/connectedServices/connectedServiceQuotaGauge';
-import { deriveAccountCapacityPct } from '@/sync/domains/connectedServices/deriveAccountCapacityPct';
 import { type ResetCountdownDaysFormatter } from '@/sync/domains/connectedServices/formatResetCountdown';
 import { shouldHideQuotaForCredentialStatus } from '@/sync/domains/connectedServices/shouldHideQuotaForCredentialStatus';
 import { projectConnectedServiceQuotaSnapshotForLimitSelection } from '@/sync/domains/connectedServices/projectConnectedServiceQuotaSnapshotForLimitSelection';
@@ -24,7 +23,7 @@ import {
 } from '@happier-dev/protocol';
 import { t } from '@/text';
 
-import { resolveAccountUsageRows } from './accountBlockModel';
+import { resolveAccountCapacityView, resolveAccountUsageRows } from './accountBlockModel';
 import {
     AccountBlockView,
     defaultAccountBlockTestID,
@@ -136,17 +135,11 @@ function buildQuotaView(
     const { snapshot, nowMs } = hook;
     const displaySnapshot = projectConnectedServiceQuotaSnapshotForLimitSelection(snapshot, quotaLimitSelection);
 
-    const gauge = displaySnapshot
-        ? computeConnectedServiceQuotaGaugeViewModel({
-            snapshot: displaySnapshot,
-            windowMode: 'most_constrained',
-            nowMs,
-            formatter: GAUGE_LABEL_FORMATTER,
-        })
-        : null;
+    const capacity = resolveAccountCapacityView(displaySnapshot?.meters ?? [], nowMs, GAUGE_LABEL_FORMATTER);
 
-    const usageRows = resolveAccountUsageRows(gauge?.allMeterRows);
-    const capacityPct = gauge ? deriveAccountCapacityPct(gauge.allMeterRows) : null;
+    const usageRows = resolveAccountUsageRows(displaySnapshot
+        ? buildConnectedServiceQuotaGaugeMeterRows(displaySnapshot.meters, nowMs, GAUGE_LABEL_FORMATTER)
+        : []);
     const resetRows = hook.canConsumeRecoveryCredit
         ? buildQuotaResetRows(snapshot?.recoveryCredits, nowMs, RESET_COUNTDOWN_DAYS_FORMATTER)
         : [];
@@ -162,7 +155,8 @@ function buildQuotaView(
         refresh: hook.refresh,
         planLabel: snapshot?.planLabel ?? null,
         usageRows,
-        capacityPct,
+        capacityPct: capacity.capacityPct,
+        capacityRings: capacity.rings,
         resetRows,
         resetAvailableCount: hook.canConsumeRecoveryCredit
             ? hook.recoveryCreditSummary?.availableCount ?? 0

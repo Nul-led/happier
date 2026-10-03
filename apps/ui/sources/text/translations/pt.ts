@@ -6946,6 +6946,7 @@ export const pt: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contexto",
       windowTitle: "Janela de contexto",
       usedDetail: ({
         percent,
@@ -8407,12 +8408,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso do provedor",
         footer:
-          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor.",
+          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor. Fixe uma janela de uso numa conta conectada para mostrá-la como indicador adicional.",
         visibilityTitle: "Mostrar medidor de uso do provedor",
         visibilityEnabledSubtitle:
           "Mostra a cota restante do provedor ao lado do compositor quando disponível.",
         visibilityHiddenSubtitle: "Oculta a cota do provedor no compositor.",
         windowTitle: "Janela do medidor",
+        labelsTitle: 'Mostrar etiquetas de uso',
+        labelsSubtitle: 'Identificar os indicadores de contexto e do provedor.',
         windowMostConstrainedTitle: "Mais limitada",
         windowMostConstrainedSubtitle:
           "Mostra a janela de cota confiável com menos cota restante.",

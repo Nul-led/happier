@@ -35,6 +35,7 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
     const [agentInputActionBarLayout, setAgentInputActionBarLayout] = useSettingMutable('agentInputActionBarLayout');
     const [agentInputChipDensity, setAgentInputChipDensity] = useSettingMutable('agentInputChipDensity');
     const [alwaysShowContextSize, setAlwaysShowContextSize] = useSettingMutable('alwaysShowContextSize');
+    const [sessionUsageGaugeLabels, setSessionUsageGaugeLabels] = useSettingMutable('sessionUsageGaugeLabels');
     const [composerSurfaceStyle, setComposerSurfaceStyle] = useSettingMutable('composerSurfaceStyle');
     const [rememberBannerVisibility, setRememberBannerVisibility] = useSettingMutable('sessionComposerRememberBannerVisibility');
     const [newSessionDraftEntryMode, setNewSessionDraftEntryMode] = useSettingMutable('newSessionDraftEntryMode');
@@ -375,6 +376,13 @@ export const SessionComposerSettingsView = React.memo(function SessionComposerSe
                     subtitle={t('settingsAppearance.alwaysShowContextSizeDescription')}
                     icon={<Icon name="chart-line" size={29} color={theme.colors.accent.indigo} />}
                     rightElement={<Switch value={alwaysShowContextSize} onValueChange={setAlwaysShowContextSize} />}
+                    showChevron={false}
+                />
+                <Item
+                    testID="settings-session-usage-gauge-labels"
+                    title={t('settingsSession.providerUsageGauge.labelsTitle')}
+                    subtitle={t('settingsSession.providerUsageGauge.labelsSubtitle')}
+                    rightElement={<Switch testID="settings-session-usage-gauge-labels-toggle" value={sessionUsageGaugeLabels === true} onValueChange={setSessionUsageGaugeLabels} />}
                     showChevron={false}
                 />
                 <Item

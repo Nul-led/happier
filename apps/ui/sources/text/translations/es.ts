@@ -6817,6 +6817,7 @@ export const es: TranslationStructure = {
     },
     context: {
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
+      badgeLabel: "Contexto",
       windowTitle: "Ventana de contexto",
       usedDetail: ({
         percent,
@@ -8295,12 +8296,14 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso del proveedor",
         footer:
-          "Controla el indicador de cuota mostrado junto al compositor cuando hay uso fiable del proveedor.",
+          "Controla el indicador de cuota mostrado junto al compositor cuando hay uso fiable del proveedor. Fija una ventana de uso en una cuenta conectada para mostrarla como indicador adicional.",
         visibilityTitle: "Mostrar indicador de uso del proveedor",
         visibilityEnabledSubtitle:
           "Muestra la cuota restante del proveedor junto al compositor cuando esté disponible.",
         visibilityHiddenSubtitle: "Oculta la cuota del proveedor en el compositor.",
         windowTitle: "Ventana del indicador",
+        labelsTitle: 'Mostrar etiquetas de uso',
+        labelsSubtitle: 'Etiqueta los indicadores de contexto y del proveedor.',
         windowMostConstrainedTitle: "Más limitada",
         windowMostConstrainedSubtitle:
           "Muestra la ventana de cuota fiable con menos cuota restante.",
