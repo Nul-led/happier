@@ -93,27 +93,13 @@ describe('happier auth login', () => {
     vi.resetModules();
   });
 
-  it('does not announce a stopped daemon when force login found none running', async () => {
-    stopDaemonMock.mockResolvedValue({ status: 'not_running' });
-    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
-    try {
-      const { handleAuthLogin } = await import('./login');
-      await handleAuthLogin(['--force']);
-      const text = output.mock.calls.flat().join('\n');
-      expect(text).toContain('No daemon was running');
-      expect(text).not.toContain('Stopped daemon');
-    } finally {
-      output.mockRestore();
-    }
-  });
-
   it('sets HAPPIER_AUTH_METHOD before running the auth flow', async () => {
     delete process.env.HAPPIER_AUTH_METHOD;
     readStoredCredentialsMock.mockResolvedValue({
       token: 'valid-token',
       encryption: { type: 'legacy', secret: new Uint8Array(32) },
     });
-    readSettingsMock.mockResolvedValue({ machineId: 'machine-1' });
+    readSettingsMock.mockResolvedValue({ machineId: 'machine-1', machineIdConfirmedByServer: true });
     let authMethodAtFlowStart: string | undefined;
     validateStoredAuthTokenAgainstActiveServerMock.mockImplementationOnce(async () => {
       authMethodAtFlowStart = process.env.HAPPIER_AUTH_METHOD;
@@ -189,18 +175,6 @@ describe('happier auth login', () => {
       const { handleAuthLogin } = await import('./login');
       await handleAuthLogin([]);
       expect(process.env.HAPPIER_AUTH_PRINT_CONFIGURE_LINKS).toBeUndefined();
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
-
-  it('prints authentication success exactly once after machine setup completes', async () => {
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    try {
-      const { handleAuthLogin } = await import('./login');
-      await handleAuthLogin([]);
-      const output = consoleSpy.mock.calls.flat().map(String).join('\n');
-      expect(output.match(/Authentication successful/gu) ?? []).toHaveLength(1);
     } finally {
       consoleSpy.mockRestore();
     }

@@ -71,7 +71,7 @@ describe('promptInput', () => {
   it('adapts arrow and Escape keypresses through the same readline prompt lifecycle', async () => {
     const input = Object.assign(new EventEmitter(), { isTTY: true, label: 'stdin' });
     stdinRef.value = input as unknown as NodeJS.ReadStream;
-    stdoutRef.value = { isTTY: true, columns: 92, rows: 24 } as unknown as NodeJS.WriteStream;
+    stdoutRef.value = Object.assign(new PassThrough(), { isTTY: true, columns: 92, rows: 24 }) as unknown as NodeJS.WriteStream;
     const onMove = vi.fn();
     const onToggle = vi.fn();
     const rl = Object.assign(new EventEmitter(), {
@@ -94,6 +94,7 @@ describe('promptInput', () => {
         answerOnEmpty: () => 'b',
       },
     });
+    await vi.waitFor(() => expect(rl.question).toHaveBeenCalled());
     input.emit('keypress', '', { name: 'down' });
     expect(onMove).toHaveBeenCalledWith(1);
     expect(render).toHaveBeenCalledWith(0);

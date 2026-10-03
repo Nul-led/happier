@@ -319,7 +319,7 @@ async function promptViaProcessStdio(prompt: string, options: PromptOptions): Pr
       prompt,
       secret: options.secret === true,
       ...(options.signal ? { signal: options.signal } : {}),
-      ...(options.animation ? { animation: options.animation } : {}),
+      ...(options.animation && process.stdin.isTTY && process.stdout.isTTY ? { animation: options.animation } : {}),
     });
   } finally {
     rl.close();

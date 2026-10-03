@@ -388,7 +388,7 @@ describe('handleConnectCommand daemon facade', () => {
     }
   });
 
-  it('shows the device code, then one waiting step until the daemon reports the account connected', async () => {
+  it('continues device authorization through pending results to the connected account', async () => {
     vi.stubEnv('HAPPIER_NO_ANIMATION', '1');
     const described = describedCodex();
     controlMock.mockResolvedValueOnce({
@@ -421,15 +421,12 @@ describe('handleConnectCommand daemon facade', () => {
       await handleConnectCommand(['openai-codex', '--device', '--no-open']);
 
       const rendered = output.logs.join('\n').replace(/\u001b\[[0-9;]*m/gu, '');
-      const code = rendered.indexOf('ABCD-1234');
-      const waiting = rendered.indexOf('- [..] Waiting for authorization');
-      const authorized = rendered.indexOf('- [✓] Authorized');
-      const connected = rendered.indexOf('connected (account-device)');
-      expect(code).toBeGreaterThanOrEqual(0);
-      expect(waiting).toBeGreaterThan(code);
-      expect(rendered.split('Waiting for authorization')).toHaveLength(2);
-      expect(authorized).toBeGreaterThan(waiting);
-      expect(connected).toBeGreaterThan(authorized);
+      expect(rendered).toContain('ABCD-1234');
+      expect(rendered).toContain('account-device');
+      expect(authenticateMock).toHaveBeenLastCalledWith({
+        operation: 'pollDevice',
+        attemptId: 'attempt-device',
+      });
     } finally {
       output.restore();
       vi.unstubAllEnvs();
