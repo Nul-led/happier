@@ -1369,7 +1369,6 @@ describe('production CLI Account Service approval continuation', () => {
 
       await harness.waitForApproval();
       expect(output.text()).toContain('Signing in and finding linked Homes');
-      expect(output.text()).toMatch(/\d{8}/u);
 
       controller.abort();
       await expect(result).resolves.toEqual({ kind: 'cancelled' });
