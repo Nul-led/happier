@@ -1,5 +1,7 @@
-import { mkdir, mkdtemp, open, readdir, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
+
+import { stringify, type TomlTable, type TomlValue } from 'smol-toml';
 
 import {
   resolveConnectedServicesProviderStateSharingPolicyV1,
@@ -16,11 +18,12 @@ import {
   removeLegacyConnectedServiceStateSharingManifest,
   writeConnectedServiceStateSharingManifest,
 } from '@/daemon/connectedServices/stateSharing/connectedServiceStateSharingManifest';
-import { applyConnectedServiceStateSharingDescriptor } from '@/daemon/connectedServices/stateSharing/applyConnectedServiceStateSharingDescriptor';
+import { applyConnectedServiceStateSharingDescriptor, parseConnectedServiceTomlConfig } from '@/daemon/connectedServices/stateSharing/applyConnectedServiceStateSharingDescriptor';
 import {
   importConnectedServiceSessionFiles,
   type ConnectedServiceSessionFileImportDetail,
 } from '@/daemon/connectedServices/stateSharing/importConnectedServiceSessionFiles';
+import { logger } from '@/ui/logger';
 
 import { resolveConfiguredCodexSqliteHome } from './codexStateFileNames';
 import { reconcileCodexSharedJsonlState } from './reconcileCodexSharedJsonlState';
@@ -79,6 +82,51 @@ function dedupeEntries(entries: readonly string[]): string[] {
     result.push(entry);
   }
   return result;
+}
+
+function asTomlTable(value: TomlValue | undefined): TomlTable | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as TomlTable : null;
+}
+
+async function readCodexProfileHookState(effectiveCodexHome: string): Promise<TomlTable> {
+  const configPath = join(effectiveCodexHome, 'config.toml');
+  try {
+    // Only preferences owned by this profile may survive replacement. A linked
+    // native config does not establish a profile-owned hook trust decision.
+    if (!(await lstat(configPath)).isFile()) return {};
+    const content = await readFile(configPath, 'utf8');
+    let config: TomlTable;
+    try {
+      config = parseConnectedServiceTomlConfig(content, configPath);
+    } catch (error) {
+      logger.infoFile('[Codex] Rebuilding malformed profile config from native config or defaults', error);
+      return {};
+    }
+    const states = asTomlTable(asTomlTable(config.hooks)?.state);
+    const ownState: TomlTable = {};
+    for (const [key, value] of Object.entries(states ?? {})) {
+      if (!key.startsWith(`${join(effectiveCodexHome, 'hooks.json')}:`)) continue;
+      const state = asTomlTable(value);
+      if (!state) continue;
+      const fields: TomlTable = {};
+      if (typeof state.trusted_hash === 'string') fields.trusted_hash = state.trusted_hash;
+      if (typeof state.enabled === 'boolean') fields.enabled = state.enabled;
+      if (Object.keys(fields).length > 0) ownState[key] = fields;
+    }
+    return ownState;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+function mergeCodexHookState(content: string, ownState: TomlTable, configPath: string): string {
+  const config = parseConnectedServiceTomlConfig(content, configPath);
+  const hooks = asTomlTable(config.hooks) ?? {};
+  config.hooks = { ...hooks, state: { ...asTomlTable(hooks.state), ...ownState } };
+  // Retain native trust hashes verbatim. Codex remains the authority that
+  // compares them with the current hook definition and marks changes untrusted.
+  return stringify(config);
 }
 
 async function resolveCodexConfigEntryNames(sourceCodexHome: string): Promise<readonly string[]> {
@@ -220,6 +268,9 @@ export async function syncCodexConnectedServiceHome(params: Readonly<{
 
     await mkdir(params.destinationCodexHome, { recursive: true });
     const manifest = await readConnectedServiceStateSharingManifest(params.destinationCodexHome);
+    const hookState = settings.configMode === 'isolated'
+      ? {}
+      : await readCodexProfileHookState(params.previousCodexHome ?? params.destinationCodexHome);
     const configEntryNames = await resolveCodexConfigEntryNames(sourceCodexHome);
     const stateEntryNames = codexConnectedServiceStateSharingDescriptor.state.entries.map((entry) => entry.path);
 
@@ -242,6 +293,9 @@ export async function syncCodexConnectedServiceHome(params: Readonly<{
         cwd: process.cwd(),
         existingManifest: manifest,
         configEntryNames,
+        copyTransformByEntry: Object.keys(hookState).length > 0
+          ? { 'config.toml': (content) => mergeCodexHookState(content, hookState, join(sourceCodexHome, 'config.toml')) }
+          : undefined,
         stateEntryNames,
         prepareSharedStateSource: preflightSourceCodexHome ? async () => {
           await backfillPreviousCodexNonSessionState({
