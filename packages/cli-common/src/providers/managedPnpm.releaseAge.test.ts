@@ -10,10 +10,10 @@ import { managedPnpmBinPath, readManagedPnpmMinimumReleaseAgeMs } from './manage
 type RunCommand = typeof runCommandCapture;
 
 /** The managed pnpm process is the boundary: it answers `config get` and `--version`. */
-function fakePnpm(answers: Readonly<{ configured: string; version: string }>) {
+function fakePnpm(answers: Readonly<{ configured: string; version: string; configStatus?: number }>) {
   return vi.fn<RunCommand>(async ({ args }) => ({
     kind: 'exited',
-    status: 0,
+    status: args.includes('--version') ? 0 : answers.configStatus ?? 0,
     signal: null,
     stdout: args.includes('--version') ? `${answers.version}\n` : `${answers.configured}\n`,
     stderr: '',
@@ -54,5 +54,18 @@ describe('readManagedPnpmMinimumReleaseAgeMs', () => {
     await expect(readManagedPnpmMinimumReleaseAgeMs({ HAPPIER_HOME_DIR: join(home, 'empty'), PATH: '' }, { runCommand }))
       .resolves.toBeNull();
     expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { configured: 'ignored', configStatus: 1 },
+    { configured: '   ', configStatus: 0 },
+  ])('uses the major default for a failed or empty configuration answer: %j', async (answer) => {
+    await expect(readManagedPnpmMinimumReleaseAgeMs(env, { runCommand: fakePnpm({ ...answer, version: '11.24.0' }) }))
+      .resolves.toBe(24 * 60 * 60_000);
+  });
+
+  it('honors an explicitly configured zero', async () => {
+    await expect(readManagedPnpmMinimumReleaseAgeMs(env, { runCommand: fakePnpm({ configured: '0', version: '11.24.0' }) }))
+      .resolves.toBe(0);
   });
 });
