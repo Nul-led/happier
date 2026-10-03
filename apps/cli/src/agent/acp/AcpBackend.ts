@@ -1822,13 +1822,18 @@ export class AcpBackend implements CatalogAcpBackend {
     const configOptionsRaw = Array.isArray(configOptionsCandidate) ? configOptionsCandidate : null;
     if (configOptionsRaw) {
       const next = normalizeSessionConfigOptions(configOptionsRaw);
-      if (this.options.modelConfigOptionId === normalizedConfigId) {
+      const isModelSelector = this.options.modelConfigOptionId === normalizedConfigId;
+      const currentModel = this.sessionModelState?.availableModels.find((model) => model.id === this.sessionModelState?.currentModelId);
+      const isModelOption = (this.options.projectSetModelResponse || this.options.projectSetModelResponseAwaitable)
+        && currentModel?.modelOptions?.some((option) => option.id === normalizedConfigId);
+      if (this.options.modelConfigOptionId && (isModelSelector || isModelOption)) {
         const rawModelState = readSessionModelStateFromConfigOptions(
           { configOptions: next },
-          normalizedConfigId,
+          this.options.modelConfigOptionId,
         );
         if (rawModelState) {
-          if (rawModelState.currentModelId !== normalizedValueId) {
+          const requestedModelId = isModelSelector ? normalizedValueId : currentModel?.id;
+          if (!requestedModelId || rawModelState.currentModelId !== requestedModelId) {
             throw new Error('ACP config-option response selected a different model');
           }
           // Config-option replies replace the selector catalog, not previously
@@ -1840,7 +1845,7 @@ export class AcpBackend implements CatalogAcpBackend {
               ...model,
             }));
             const target = availableModels.find((model) => model.id === rawModelState.currentModelId);
-            const projected = target ? await this.projectSetModelResponse(response, normalizedValueId, null, target) : null;
+            const projected = target ? await this.projectSetModelResponse(response, requestedModelId, null, target) : null;
             const validated = readSessionModelStateFromSessionResponse({ models: {
               currentModelId: rawModelState.currentModelId,
               availableModels: availableModels.map((model) => model.id === target?.id && projected ? projected : model),

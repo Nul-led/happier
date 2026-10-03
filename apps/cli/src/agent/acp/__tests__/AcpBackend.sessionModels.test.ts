@@ -16,6 +16,9 @@ function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: bool
   const src = `
     const decoder = new TextDecoder();
     let buf = '';
+    let currentModelId = 'model-a';
+    let currentEffort = 'high';
+    let telemetry = 'on';
 
     function send(obj) {
       process.stdout.write(JSON.stringify(obj) + '\\n');
@@ -128,19 +131,31 @@ function writeFakeAcpAgentScript(params: { dir: string; emptyModelChoices?: bool
         }
 
         if (method === 'session/set_config_option') {
+          if (params.configId === 'model') {
+            currentModelId = params.value;
+            currentEffort = 'high';
+          }
+          if (params.configId === 'reasoning_effort') currentEffort = params.value;
+          if (params.configId === 'telemetry') telemetry = params.value;
           const result = {
             configOptions: [{
-              id: params.configId,
+              id: ${params.modelConfigEffort === true} ? 'model' : params.configId,
               name: 'Agent model choice',
               type: 'select',
-              currentValue: ${params.wrongConfigModel === true} ? 'model-a' : params.value,
+              currentValue: ${params.wrongConfigModel === true} ? 'model-a' : (${params.modelConfigEffort === true} ? currentModelId : params.value),
               options: [
                 { value: 'model-a', name: 'Model A' },
                 { value: 'model-b', name: 'Model B' },
               ],
             }, ...(${params.modelConfigEffort === true} ? [{
               id: 'reasoning_effort', name: 'Effort', category: 'thought_level', type: 'select',
-              currentValue: 'high', options: [{ value: 'high', name: 'High' }],
+              currentValue: currentEffort,
+              options: currentEffort === 'medium'
+                ? [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }]
+                : [{ value: 'high', name: 'High' }],
+            }, {
+              id: 'telemetry', name: 'Telemetry', type: 'select', currentValue: telemetry,
+              options: [{ value: 'on', name: 'On' }, { value: 'off', name: 'Off' }],
             }] : [])],
           };
           if (${params.groupedModelChoices === true}) {
@@ -199,6 +214,16 @@ describe('AcpBackend session models', () => {
             { id: 'model-b', modelOptions: [{ id: 'reasoning_effort', currentValue: 'high', options: [{ value: 'high', name: 'High' }] }] },
           ],
         });
+        // Return to an observed model, then change its effort through the config path.
+        await backend.setSessionModel(sessionId, 'model-a');
+        const modelB = backend.getSessionModelState()?.availableModels.find((model) => model.id === 'model-b');
+        await backend.setSessionConfigOption(sessionId, 'reasoning_effort', 'medium');
+        expect(backend.getSessionModelState()?.availableModels.find((model) => model.id === 'model-a')?.modelOptions)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ id: 'reasoning_effort', currentValue: 'medium' })]));
+        expect(backend.getSessionModelState()?.availableModels.find((model) => model.id === 'model-b')).toEqual(modelB);
+        const beforeTelemetry = backend.getSessionModelState();
+        await backend.setSessionConfigOption(sessionId, 'telemetry', 'off');
+        expect(backend.getSessionModelState()).toBe(beforeTelemetry);
       } finally { await backend.dispose(); }
     });
   });

@@ -4,12 +4,16 @@ import type { AgentAcpRuntimeDefinition } from '@happier-dev/plugin-sdk/agents/r
 import { COPILOT_ACP_RUNTIME_DEFINITION } from './definition.js';
 
 describe('Copilot ACP backend definition', () => {
-  it.each(['reasoning_effort', 'thinking'])('replaces stale %s options with the selected model response and rejects a different selected model', (optionId) => {
+  it.each([
+    { optionId: 'reasoning_effort' },
+    { optionId: 'thinking' },
+    { optionId: 'native_thought', category: 'thought_level' },
+  ])('replaces stale $optionId options with the selected model response and rejects a different selected model', ({ optionId, category }) => {
     const definition: AgentAcpRuntimeDefinition = COPILOT_ACP_RUNTIME_DEFINITION;
     const targetModel = { id: 'model-b', name: 'B', modelOptions: [{ id: optionId, name: 'Effort', type: 'select', currentValue: 'medium', options: [{ value: 'medium', name: 'Medium' }] }] };
     const response = { configOptions: [
       { id: 'model', name: 'Model', type: 'select', currentValue: 'model-b', options: [{ value: 'model-b', name: 'B' }] },
-      { id: optionId, name: 'Effort', category: 'thought_level', type: 'select', currentValue: 'high', options: [{ group: 'available', name: 'Available', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }] }] },
+      { id: optionId, name: 'Effort', ...(category ? { category } : {}), type: 'select', currentValue: 'high', options: [{ group: 'available', name: 'Available', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }] }] },
     ] };
     const project = definition.models?.projectSetModelResponse;
     expect(project?.({ response, targetModel, requestedModelId: 'model-b', requestMeta: null })).toMatchObject({

@@ -23,7 +23,7 @@ function choices(raw: unknown): NonNullable<AgentAcpModelOption['options']> {
 function effortOptions(raw: readonly unknown[]): AgentAcpModelOption[] {
   return raw.flatMap((entry) => {
     const option = record(entry);
-    if (!option || (option.category !== 'thought_level' && option.id !== 'reasoning_effort')
+    if (!option || (option.category !== 'thought_level' && option.id !== 'reasoning_effort' && option.id !== 'thinking')
       || typeof option.id !== 'string' || typeof option.name !== 'string'
       || option.type !== 'select' || typeof option.currentValue !== 'string') return [];
     return [{ id: option.id, name: option.name, type: option.type, currentValue: option.currentValue,
