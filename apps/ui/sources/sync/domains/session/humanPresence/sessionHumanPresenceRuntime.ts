@@ -7,6 +7,7 @@ import {
 } from '@happier-dev/protocol/sessions';
 import { getVisibleSessionSurfaces, subscribeSessionSurfaceVisibility } from '../sessionSurfaceVisibility';
 import { readHostActivelyViewed, subscribeToHostActivelyViewed } from '@/utils/runtime/useHostActivelyViewed';
+import { readComputerUiFocusState, subscribeToRuntimeActiveChange } from '@/utils/runtime/isRuntimeActive';
 import { sessionHumanPresenceStore, type SessionHumanPresenceTarget } from './sessionHumanPresenceStore';
 
 export type SessionHumanPresenceSocketTransport = Readonly<{
@@ -77,6 +78,16 @@ export function attachSessionHumanPresenceSocket(input: Readonly<{
     let handle = sessionHumanPresenceStore.attachHome(serverId, accountId);
     let connected = false;
     let disposed = false;
+    let focusSignature: string | null = null;
+    const publishFocus = () => {
+        if (disposed || !connected) return;
+        const focus = readComputerUiFocusState();
+        if (!focus.computer && focusSignature === null) return;
+        const next = JSON.stringify(focus);
+        if (next === focusSignature) return;
+        focusSignature = next;
+        transport.send('ui-focus', focus);
+    };
     let generation = 0;
     let support: 'unknown' | 'supported' | 'unavailable' = 'unknown';
     let pending = false;
@@ -240,6 +251,7 @@ export function attachSessionHumanPresenceSocket(input: Readonly<{
         if (next === connected) return;
         stop();
         connected = next;
+        focusSignature = null;
         generation++;
         pending = false;
         signature = null;
@@ -248,18 +260,21 @@ export function attachSessionHumanPresenceSocket(input: Readonly<{
         discussionSupport = 'unknown';
         unacknowledgedDeclarationMayBeApplied = false;
         if (connected) {
+            publishFocus();
             handle = sessionHumanPresenceStore.attachHome(serverId, accountId);
             support = 'unknown';
             publish();
         } else handle.setStatus('connecting');
     };
     const offStatus = transport.subscribeStatus(changeStatus);
+    const offFocus = subscribeToRuntimeActiveChange(publishFocus, { includeWindowFocus: true });
     const offSnapshot = transport.subscribeSnapshot((raw) => {
         if (!disposed && connected && support === 'supported') handle.receiveSnapshot(raw);
     });
     changeStatus();
     function dispose(preserveObservation = false) {
         if (disposed) return;
+        if (connected && focusSignature !== null) transport.send('ui-focus', { computer: true, focused: false });
         stop();
         if (connected && (support === 'supported' || unacknowledgedDeclarationMayBeApplied)) {
             transport.send(VISIBLE_EVENT, { v: 1, sessionIds: [] });
@@ -267,7 +282,7 @@ export function attachSessionHumanPresenceSocket(input: Readonly<{
         }
         disposed = true;
         generation++;
-        offStatus(); offSnapshot();
+        offStatus(); offSnapshot(); offFocus();
         if (!preserveObservation) handle.dispose();
         if (homes.get(serverId) === attachment) homes.delete(serverId);
         if (homes.size === 0) { detachVisibility?.(); detachVisibility = null; }

@@ -4,6 +4,8 @@ import { Platform } from 'react-native';
 
 import { parseSessionChangedWakeV1, type SessionChangedWakeV1 } from '@happier-dev/protocol';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverProfiles';
+import { withMutedActivityLocalNotifications } from '../runtime/activityLocalNotificationBus';
 
 declare const require: (id: string) => unknown;
 
@@ -113,6 +115,7 @@ async function reconcileExactHomeSession(wake: SessionChangedWakeV1): Promise<bo
     const result = await getSyncSingleton().ensureSessionVisibleForMessageRoute(wake.sessionId, {
         forceRefresh: true,
         hydrateMessages: true,
+        ...(wake.alert === 'muted' ? { awaitMessageHydration: true } : {}),
         ...(wake.serverId ? { serverId: wake.serverId } : {}),
     });
     return result.kind === 'available';
@@ -125,7 +128,13 @@ export async function applySessionChangedBackgroundWakePayload(params: Readonly<
     const wake = readSessionChangedBackgroundWakePayload(params.payload);
     if (!wake) return { action: 'ignore', reason: 'not_a_session_changed_wake' };
     const reconcile = params.reconcile ?? reconcileExactHomeSession;
-    if (!await reconcile(wake)) return { action: 'ignore', reason: 'session_unavailable' };
+    const reconciled = wake.alert === 'muted'
+        ? await withMutedActivityLocalNotifications({
+            serverId: wake.serverId ?? getActiveServerSnapshot().serverId,
+            sessionId: wake.sessionId,
+        }, () => reconcile(wake))
+        : await reconcile(wake);
+    if (!reconciled) return { action: 'ignore', reason: 'session_unavailable' };
     return {
         action: 'reconciled',
         sessionId: wake.sessionId,

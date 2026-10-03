@@ -308,6 +308,8 @@ const kotlinWakeSource = joinPath(
 // The Home's content-free closed-app wake exactly as it is submitted, beside
 // the neighbors the Android entry point must never hand to the wake consumer.
 const wakeScenarios = [
+  { id: 'wake_muted', payload: { type: 'session_changed', serverId: SERVER_ID, sessionId: SESSION_ID, alert: 'muted' } },
+  { id: 'wake_unknown_alert', payload: { type: 'session_changed', serverId: SERVER_ID, sessionId: SESSION_ID, alert: 'loud' } },
   { id: 'wake_with_home', payload: { type: 'session_changed', serverId: SERVER_ID, sessionId: SESSION_ID } },
   { id: 'wake_without_home', payload: { type: 'session_changed', sessionId: SESSION_ID } },
   { id: 'wake_padded_ids', payload: { type: 'session_changed', serverId: ` ${SERVER_ID} `, sessionId: ` ${SESSION_ID} ` } },

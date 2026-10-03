@@ -11,6 +11,9 @@ describe('session_changed wake payload', () => {
   });
 
   it('rejects the sibling push payloads and any added content field', () => {
+    expect(parseSessionChangedWakeV1({ type: 'session_changed', sessionId: 's1', alert: 'muted' }))
+      .toEqual({ type: 'session_changed', sessionId: 's1', alert: 'muted' });
+    expect(parseSessionChangedWakeV1({ type: 'session_changed', sessionId: 's1', alert: 'visible' })).toBeNull();
     expect(parseSessionChangedWakeV1({ type: 'badge_refresh' })).toBeNull();
     expect(parseSessionChangedWakeV1({ type: 'activity_alert', v: 2, sessionId: 's1' })).toBeNull();
     expect(parseSessionChangedWakeV1({ type: 'session_changed', sessionId: 's1', title: 'secret' })).toBeNull();

@@ -404,9 +404,9 @@ test('the Android wake consumer keys on the canonical Protocol wake discriminato
   // exactly the canonical one, so no content field can ride into the app process.
   const canonicalFields = [...protocolWakeSource
     .matchAll(/^\s{2}(\w+):/gm)].map((match) => match[1]).sort();
-  assert.deepEqual(canonicalFields, ['serverId', 'sessionId', 'type']);
+  assert.deepEqual(canonicalFields, ['alert', 'serverId', 'sessionId', 'type']);
   assert.deepEqual(
-    [...kotlinWakeSource.matchAll(/setOf\("type", "serverId", "sessionId"\)/g)].length, 1,
+    [...kotlinWakeSource.matchAll(/setOf\("type", "serverId", "sessionId", "alert"\)/g)].length, 1,
   );
 });
 

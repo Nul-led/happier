@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { type Fastify } from "../../types";
 import { db, getActivePrismaRuntime } from "@/storage/db";
+import { eventRouter } from '@/app/events/eventRouter';
+import { shouldMuteMobileAlertsForComputerFocus } from '@happier-dev/protocol';
 import { PushTokenRegisterRequestSchema, DeviceRemoteAlertPolicyV1Schema, resolveAccountRemoteAlertPolicyCurrentness } from '@happier-dev/protocol';
 import { redactSentryLogAttributes } from "@/app/monitoring/sentryLogRedaction";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
@@ -129,11 +131,16 @@ export function pushRoutes(app: Fastify) {
 
     // Get Push Tokens API
     app.get('/v1/push-tokens', {
-        schema: { querystring: z.object({ projectionVersion: z.coerce.number().int().optional() }) },
+        schema: { querystring: z.object({ projectionVersion: z.coerce.number().int().optional(), suppressIfComputerFocused: z.enum(['0', '1']).optional() }) },
         preHandler: app.authenticate
     }, async (request, reply) => {
         const requestHomeEnv = await readRequestHomeEnv(request);
         const userId = request.userId;
+
+        if (request.query.suppressIfComputerFocused === '1' && shouldMuteMobileAlertsForComputerFocus({
+            mutePhoneWhenComputerFocused: true,
+            computerFocused: await eventRouter.hasFocusedComputerUi(userId),
+        })) return reply.send({ tokens: [], suppressedByFocusedComputer: true });
 
         try {
             const tokens = await db.accountPushToken.findMany({

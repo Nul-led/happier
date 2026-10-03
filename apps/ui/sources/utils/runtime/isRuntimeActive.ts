@@ -1,5 +1,7 @@
 import { AppState, Platform } from 'react-native';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { isWebMobileHost } from '@/utils/platform/webMobileHeuristics';
+import { readHostWindowFocus } from './readHostWindowFocus';
 
 export function isRuntimeActive(): boolean {
     if (isDesktopHost()) {
@@ -59,7 +61,7 @@ function readDocument(): (Document & {
  * the state unchanged; a caller that needs edge semantics compares
  * `isRuntimeActive()` itself.
  */
-export function subscribeToRuntimeActiveChange(listener: () => void): () => void {
+export function subscribeToRuntimeActiveChange(listener: () => void, options?: Readonly<{ includeWindowFocus?: boolean }>): () => void {
     const detach: Array<() => void> = [];
 
     const doc = readDocument();
@@ -67,6 +69,16 @@ export function subscribeToRuntimeActiveChange(listener: () => void): () => void
         doc.addEventListener('visibilitychange', listener);
         detach.push(() => {
             doc.removeEventListener?.('visibilitychange', listener);
+        });
+    }
+
+    const hostWindow = (globalThis as unknown as { window?: Window }).window;
+    if (options?.includeWindowFocus === true && typeof hostWindow?.addEventListener === 'function') {
+        hostWindow.addEventListener('focus', listener);
+        hostWindow.addEventListener('blur', listener);
+        detach.push(() => {
+            hostWindow.removeEventListener('focus', listener);
+            hostWindow.removeEventListener('blur', listener);
         });
     }
 
@@ -84,6 +96,13 @@ export function subscribeToRuntimeActiveChange(listener: () => void): () => void
             stop();
         }
     };
+}
+
+/** Unknown physical focus cannot suppress another device's alert. */
+export function readComputerUiFocusState(): Readonly<{ computer: boolean; focused: boolean }> {
+    const focus = readHostWindowFocus();
+    const computer = Platform.OS === 'web' && focus !== undefined && (isDesktopHost() || !isWebMobileHost());
+    return { computer, focused: computer && focus === true && readDocument()?.visibilityState === 'visible' };
 }
 
 export function startRuntimeActiveGatedInterval(callback: () => void, intervalMs: number): () => void {

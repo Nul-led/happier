@@ -184,6 +184,7 @@ export const NotificationsSettingsV1Schema = z
     z.object({
       v: z.literal(1).default(1),
       pushEnabled: z.boolean().default(true),
+      mutePhoneWhenComputerFocused: z.boolean().optional().catch(undefined),
       ready: z.boolean().default(true),
       readyIncludeMessageText: z.boolean().default(true),
       requestIncludeMessageText: z.boolean().default(true),
@@ -549,6 +550,13 @@ function backfillLegacyTargetKeyedAccountSettings(raw: Record<string, unknown>):
     : AttentionDeliveryPolicyV1Schema.safeParse(next.attentionDeliveryPolicyV1);
   if (parsedAttentionDeliveryPolicy?.success === true) {
     next.attentionDeliveryPolicyV1 = parsedAttentionDeliveryPolicy.data;
+    if (!Object.prototype.hasOwnProperty.call(next.attentionDeliveryPolicyV1, 'mutePhoneWhenComputerFocused')
+      && !Object.prototype.hasOwnProperty.call(source.attentionDeliveryPolicyV1, 'mutePhoneWhenComputerFocused')) {
+      const predecessor = NotificationsSettingsV1Schema.safeParse(source.notificationsSettingsV1);
+      if (predecessor.success && predecessor.data.mutePhoneWhenComputerFocused === true) {
+        next.attentionDeliveryPolicyV1 = { ...parsedAttentionDeliveryPolicy.data, mutePhoneWhenComputerFocused: true };
+      }
+    }
   }
 
   if (next.attentionDeliveryPolicyV1 === undefined || parsedAttentionDeliveryPolicy?.success === false) {

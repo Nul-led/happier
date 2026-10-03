@@ -8,6 +8,7 @@ import { enableAuthentication } from "../../utils/enableAuthentication";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { pushRoutes } from "./pushRoutes";
+import { eventRouter } from '@/app/events/eventRouter';
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -33,6 +34,7 @@ describe("pushRoutes (clientServerUrl) (integration)", () => {
     }, 120_000);
 
     afterEach(async () => {
+        eventRouter.clearIo();
         await closeTrackedApps();
         harness.resetEnv();
         vi.unstubAllGlobals();
@@ -42,6 +44,31 @@ describe("pushRoutes (clientServerUrl) (integration)", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it('filters only opted-in focused-account alert requests and fails open on unavailable focus', async () => {
+        const app = createTestApp();
+        const account = await db.account.create({ data: { publicKey: 'pk_focus_push' } });
+        const credential = await auth.createToken(account.id, undefined, { kind: 'account', authority: 'present_user' });
+        const headers = { authorization: `Bearer ${credential}` };
+        const token = 'ExponentPushToken[focus]';
+        await app.inject({ method: 'POST', url: '/v1/push-tokens', headers, payload: { token } });
+        let focused = true;
+        let unavailable = false;
+        eventRouter.setIo({ to: () => ({ emit() {}, disconnectSockets() {} }), in: (room) => ({ fetchSockets: async () => {
+            if (unavailable) throw new Error('adapter unavailable');
+            return room === `user-scoped:${account.id}`
+                ? [{ id: 'focus', data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused } } }]
+                : [];
+        } }) });
+        const read = (optIn = true) => app.inject({ method: 'GET', headers,
+            url: `/v1/push-tokens${optIn ? '?suppressIfComputerFocused=1' : ''}` });
+        expect((await read(false)).json().tokens).toHaveLength(1);
+        expect((await read()).json()).toEqual({ tokens: [], suppressedByFocusedComputer: true });
+        focused = false;
+        expect((await read()).json().tokens).toHaveLength(1);
+        focused = true; unavailable = true;
+        expect((await read()).json().tokens).toHaveLength(1);
     });
 
     it("stores and returns clientServerUrl for each push token", async () => {

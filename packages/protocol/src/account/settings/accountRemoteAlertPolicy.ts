@@ -72,6 +72,7 @@ export const AccountRemoteAlertPolicyV1Schema = z.object({
   channels: z.object({ expo_push: RemoteAlertChannelPolicyV1Schema }).strict(),
   quietHours: RemoteAlertQuietHoursV1Schema,
   foregroundBehavior: z.enum(['full', 'silent', 'off']),
+  mutePhoneWhenComputerFocused: z.boolean().optional(),
   privacy: z.object({
     defaultPreviewBehavior: AttentionPreviewBehaviorSchema,
     surfaces: z.object({ expo_push: AttentionPreviewBehaviorSchema.optional() }).strict(),
@@ -134,21 +135,26 @@ function projectEvent(event: AttentionDeliveryEventConfig) {
 
 export function deriveAccountRemoteAlertPolicyV1(settings: unknown): AccountRemoteAlertPolicyV1 | null {
   const parsed = accountSettingsParse(settings);
-  if (parsed.sessionRemoteAlertsEnabled !== true) return null;
   const policy = parsed.attentionDeliveryPolicyV1;
+  // The same public projection carries wake muting even when Home OS alerts
+  // are opted out. It must never turn that opt-out into alert consent.
+  if (parsed.sessionRemoteAlertsEnabled !== true && policy.mutePhoneWhenComputerFocused !== true) return null;
   const projectEvents = (events: AttentionDeliveryPolicyV1['events']) => Object.fromEntries(
     REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS.map((event) => [event, projectEvent(events[event])]),
   );
   return AccountRemoteAlertPolicyV1Schema.parse({
     v: 1,
     events: projectEvents(policy.events),
-    channels: { expo_push: { ...projectEvent(policy.channels.expo_push), events: projectEvents(policy.channels.expo_push.events) } },
+    channels: { expo_push: { ...projectEvent(policy.channels.expo_push),
+      enabled: parsed.sessionRemoteAlertsEnabled === true && policy.channels.expo_push.enabled,
+      events: projectEvents(policy.channels.expo_push.events) } },
     quietHours: {
       enabled: policy.quietHours.enabled,
       timezone: policy.quietHours.timezone,
       windows: policy.quietHours.windows.map(({ startLocalTime, endLocalTime, days }) => ({ startLocalTime, endLocalTime, ...(days ? { days } : {}) })),
     },
     foregroundBehavior: policy.foregroundBehavior,
+    ...(policy.mutePhoneWhenComputerFocused === undefined ? {} : { mutePhoneWhenComputerFocused: policy.mutePhoneWhenComputerFocused }),
     privacy: { defaultPreviewBehavior: policy.privacy.defaultPreviewBehavior, surfaces: policy.privacy.surfaces.expo_push === undefined ? {} : { expo_push: policy.privacy.surfaces.expo_push } },
     sounds: {
       defaultSoundId: remoteSound(policy.sounds.defaultSoundId),

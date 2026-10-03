@@ -4438,7 +4438,9 @@ export const ru = {
     visibilityModeAttentionOnly: 'Только внимание',
   },
 
-  settingsNotifications: {
+    settingsNotifications: {
+    mutePhoneWhenComputerFocusedTitle: "Отключать уведомления телефона при работе на компьютере",
+    mutePhoneWhenComputerFocusedSubtitle: "Не отправлять уведомления «Готово» и запросы, пока хотя бы одно окно Happier на компьютере имеет фокус. Они возобновятся, когда ни одно окно на компьютере не будет в фокусе.",
         pageDescription: 'Выберите, что вас оповещает, где и когда соблюдается тишина.',
         remoteAlerts: {
             title: "Оповещения о сессиях при закрытом приложении",

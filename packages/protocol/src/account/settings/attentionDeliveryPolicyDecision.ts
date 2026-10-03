@@ -26,6 +26,14 @@ const TERMINAL_FRONTMOST_INTERRUPTIVE_CHANNELS = new Set<AttentionDeliveryChanne
   'desktop_overlay',
 ]);
 
+/** An explicit Account opt-in and observed computer focus are both required. */
+export function shouldMuteMobileAlertsForComputerFocus(params: Readonly<{
+  mutePhoneWhenComputerFocused: unknown;
+  computerFocused: unknown;
+}>): boolean {
+  return params.mutePhoneWhenComputerFocused === true && params.computerFocused === true;
+}
+
 function normalizeDecisionEventId(event: string): string {
   return normalizeAttentionDeliveryEventId(event);
 }
@@ -159,6 +167,11 @@ function buildDecision(params: {
     : params.sound;
   return {
     delivery: params.delivery,
+    ...(params.policy.mutePhoneWhenComputerFocused === true
+      && params.channel === 'expo_push'
+      && ['ready', 'permission_request', 'user_action_request'].includes(params.event)
+      ? { suppressIfComputerFocused: true as const }
+      : {}),
     reason: params.reason,
     sound,
     foregroundBehavior: params.policy.foregroundBehavior,

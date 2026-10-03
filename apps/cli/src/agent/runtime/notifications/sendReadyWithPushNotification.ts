@@ -1,4 +1,5 @@
 import type { SessionClientPort } from '@/api/session/sessionClientPort'
+import type { PushNotificationDeliveryOptions } from '@/api/pushNotifications'
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog'
 import { buildReadyNotificationContent, type AccountSettings } from '@happier-dev/protocol'
 import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification'
@@ -12,7 +13,7 @@ import { getActiveAccountSettingsSnapshot } from '@/settings/accountSettings/act
 import { logger } from '@/ui/logger'
 
 type PushSender = LiveActivityRemoteSenderCandidate & SessionNotificationContextReader & {
-  sendToAllDevices?: (title: string, body: string, opts: { sessionId: string; activityEventLocalId?: string }) => void
+  sendToAllDevices?: (title: string, body: string, opts: { sessionId: string; activityEventLocalId?: string }, deliveryOptions?: PushNotificationDeliveryOptions) => void
   sendToAllDevicesAsync?: ExpoPushActivityNotificationSender['sendToAllDevicesAsync']
 }
 
@@ -87,9 +88,9 @@ export async function sendReadyWithPushNotification(opts: {
           }
         : opts.pushSender?.sendToAllDevices
           ? {
-              sendToAllDevicesAsync: async (title: string, body: string, data: Record<string, unknown>) => {
+              sendToAllDevicesAsync: async (title: string, body: string, data: Record<string, unknown>, deliveryOptions?: PushNotificationDeliveryOptions) => {
                 const sessionId = typeof data.sessionId === 'string' ? data.sessionId : opts.session.sessionId
-                opts.pushSender?.sendToAllDevices?.(title, body, { ...data, sessionId })
+                opts.pushSender?.sendToAllDevices?.(title, body, { ...data, sessionId }, deliveryOptions)
                 return true
               },
             }

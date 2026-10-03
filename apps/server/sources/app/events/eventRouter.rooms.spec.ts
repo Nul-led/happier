@@ -295,3 +295,23 @@ describe("eventRouter (rooms)", () => {
         expect(await readMetricSamples("event_fanout_payload_bytes")).toEqual([]);
     });
 });
+
+describe('focused computer room query', () => {
+    afterEach(() => eventRouter.clearIo());
+    it('checks remote adapter socket data and excludes phone, daemon, legacy and blurred sockets', async () => {
+        const fetchSockets = vi.fn().mockResolvedValue([
+            { id: 'phone', data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: false, focused: true } } },
+            { id: 'machine', data: { clientType: 'machine-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused: true } } },
+            { id: 'legacy', data: { clientType: 'user-scoped', clientPurpose: 'sync' } },
+            { id: 'blurred', data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused: false } } },
+        ]);
+        const inRoom = vi.fn(() => ({ fetchSockets }));
+        eventRouter.setIo({ in: inRoom, to: vi.fn(() => ({ emit: vi.fn(), disconnectSockets: vi.fn() })) });
+        expect(await eventRouter.hasFocusedComputerUi('account')).toBe(false);
+        expect(inRoom).toHaveBeenCalledWith('user-scoped:account');
+        fetchSockets.mockResolvedValue([{ id: 'focused', data: { clientType: 'user-scoped', clientPurpose: 'sync', uiFocus: { computer: true, focused: true } } }]);
+        expect(await eventRouter.hasFocusedComputerUi('account')).toBe(true);
+        fetchSockets.mockRejectedValue(new Error('adapter unavailable'));
+        expect(await eventRouter.hasFocusedComputerUi('account')).toBe(false);
+    });
+});

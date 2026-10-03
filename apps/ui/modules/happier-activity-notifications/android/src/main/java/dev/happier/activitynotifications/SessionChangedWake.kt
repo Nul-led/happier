@@ -8,9 +8,9 @@ import org.json.JSONObject
  *
  * Mirrors `SessionChangedWakeV1Schema` in `packages/protocol/src/push/sessionChangedWake.ts`,
  * the single owner of this wire shape. It names a Session and, when the Home
- * knows its own identity, that Home — nothing else. Admission is strict so a
+ * knows its own identity, that Home, plus the optional mute qualifier. Admission is strict so a
  * remote alert, a badge refresh or any payload carrying content can never be
- * handed to the app process as a wake, and no title, body or policy decision
+ * handed to the app process as a wake, and no title or body
  * can ride along inside one.
  *
  * This consumer never presents, enriches or decides anything: the app process's
@@ -37,7 +37,8 @@ data class SessionChangedWake(
         while (iterator.hasNext()) add(iterator.next())
       }.toSet()
       if (!keys.contains("type") || !keys.contains("sessionId")) return null
-      if (!setOf("type", "serverId", "sessionId").containsAll(keys)) return null
+      if (!setOf("type", "serverId", "sessionId", "alert").containsAll(keys)) return null
+      if (keys.contains("alert") && payload.opt("alert") != "muted") return null
       if (payload.requiredString("type") != TYPE) return null
       val sessionId = payload.requiredString("sessionId") ?: return null
       val serverId = if (keys.contains("serverId")) payload.requiredString("serverId") ?: return null else null

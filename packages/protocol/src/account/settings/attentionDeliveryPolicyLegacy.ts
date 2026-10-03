@@ -9,6 +9,7 @@ import {
 
 type LegacyNotificationsSettings = {
   pushEnabled?: boolean;
+  mutePhoneWhenComputerFocused?: boolean;
   ready?: boolean;
   readyIncludeMessageText?: boolean;
   requestIncludeMessageText?: boolean;
@@ -55,6 +56,7 @@ export function deriveAttentionDeliveryPolicyFromLegacySettings(params: {
   const notificationsSettings = params.notificationsSettings;
   const policy = AttentionDeliveryPolicyV1Schema.parse({
     foregroundBehavior: notificationsSettings.foregroundBehavior ?? 'full',
+    ...(notificationsSettings.mutePhoneWhenComputerFocused === true ? { mutePhoneWhenComputerFocused: true } : {}),
   });
 
   const events = { ...policy.events };

@@ -4,8 +4,8 @@ import { z } from 'zod';
  * The content-free closed-app wake this Home sends beside the badge refresh and
  * the remote-alert leg.
  *
- * It carries identifiers only: no title, body, author, sound, preview ceiling or
- * policy decision. A recipient device that receives it synchronizes that exact
+ * It carries identifiers and an optional mute qualifier, never content. A
+ * recipient device that receives it synchronizes that exact
  * Home and then evaluates the recipient's own Activity notification policy and
  * content builder locally, so the Home never has to learn the recipient's
  * settings to reach a closed app.
@@ -23,6 +23,8 @@ export const SessionChangedWakeV1Schema = z.object({
   /** Originating Home, when this Home knows its own identity. */
   serverId: z.string().trim().min(1).optional(),
   sessionId: z.string().trim().min(1),
+  /** Reconcile this wake without presenting a local alert. */
+  alert: z.literal('muted').optional(),
 }).strict();
 export type SessionChangedWakeV1 = z.infer<typeof SessionChangedWakeV1Schema>;
 

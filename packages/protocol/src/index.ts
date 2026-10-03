@@ -110,7 +110,7 @@ export {
   type AttentionPreviewBehavior,
   type RemoteAlertAttentionDeliveryEventId,
 } from './account/settings/attentionDeliveryPolicy.js';
-export { resolveAttentionDeliveryPreviewBehavior } from './account/settings/attentionDeliveryPolicyDecision.js';
+export { resolveAttentionDeliveryPreviewBehavior, shouldMuteMobileAlertsForComputerFocus } from './account/settings/attentionDeliveryPolicyDecision.js';
 
 export {
   ACTIVITY_REMOTE_ALERT_EVENT_TYPES_V1,

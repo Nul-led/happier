@@ -1,6 +1,7 @@
 import type { Message } from "@happier-dev/session-core/messages";
 import type { ActivitySequenceEventReferenceV1, AgentRequestKind } from '@happier-dev/protocol';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
+import { resolveServerProfileScopeIdForIdentifier } from '@/sync/domains/server/serverProfiles';
 
 type ActivitySessionUpdateNotification = Readonly<{
     address: SessionAddress;
@@ -21,6 +22,7 @@ export type ActivityLocalNotificationEvent =
         messages?: Message[];
         committedSequence?: ActivitySequenceEventReferenceV1;
         committedLocalId?: string;
+        source?: 'reconciliation';
     }>
     | Readonly<{
         kind: 'agent-request';
@@ -36,6 +38,26 @@ export type ActivityLocalNotificationEvent =
 type Listener = (event: ActivityLocalNotificationEvent) => void;
 
 const listeners = new Set<Listener>();
+const mutedWakeReconciliations = new Map<string, number>();
+const wakeKey = (address: SessionAddress) => JSON.stringify([
+    resolveServerProfileScopeIdForIdentifier(address.serverId), address.sessionId,
+]);
+
+/** Only the reconciliation of a qualified muted wake is silent; no preference is stored here. */
+export async function withMutedActivityLocalNotifications<T>(address: SessionAddress, reconcile: () => Promise<T>): Promise<T> {
+    const key = wakeKey(address);
+    mutedWakeReconciliations.set(key, (mutedWakeReconciliations.get(key) ?? 0) + 1);
+    try { return await reconcile(); }
+    finally {
+        const remaining = (mutedWakeReconciliations.get(key) ?? 1) - 1;
+        if (remaining > 0) mutedWakeReconciliations.set(key, remaining);
+        else mutedWakeReconciliations.delete(key);
+    }
+}
+
+export function isActivityLocalNotificationMutedForWake(address: SessionAddress): boolean {
+    return mutedWakeReconciliations.has(wakeKey(address));
+}
 
 function publish(event: ActivityLocalNotificationEvent): void {
     for (const listener of Array.from(listeners)) {
@@ -65,6 +87,7 @@ export function notifyActivityReady(
     messages?: Message[],
     committedSequence?: ActivitySequenceEventReferenceV1,
     committedLocalId?: string,
+    source?: 'reconciliation',
 ): void {
     const address = normalizeSessionAddress(addressInput.serverId, addressInput.sessionId);
     if (!address) return;
@@ -76,6 +99,7 @@ export function notifyActivityReady(
         messages,
         ...(committedSequence ? { committedSequence } : {}),
         ...(committedLocalId ? { committedLocalId } : {}),
+        ...(source ? { source } : {}),
     };
 
     publish(event);

@@ -297,6 +297,8 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 pushEnabled={pushEnabled}
                 setPushEnabled={setPushEnabled}
                 openPushTroubleshooting={openPushTroubleshooting}
+                mutePhoneWhenComputerFocused={attentionPolicy.mutePhoneWhenComputerFocused === true}
+                setMutePhoneWhenComputerFocused={(enabled) => setAttentionPolicy({ mutePhoneWhenComputerFocused: enabled })}
             />
             <NotificationTypesSection
                 policy={attentionPolicy}

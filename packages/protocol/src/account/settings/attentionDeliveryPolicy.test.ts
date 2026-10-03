@@ -312,3 +312,46 @@ describe('attentionDeliveryPolicyV1 resolver', () => {
     });
   });
 });
+
+describe('computer focus phone-push policy', () => {
+  it.each(['ready', 'permission_request', 'user_action_request'])('marks only opted-in Expo %s delivery', (event) => {
+    const policy = parseAccountSettings({ attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: true } }).attentionDeliveryPolicyV1;
+    expect(resolveAttentionDecision({ policy, event, channel: 'expo_push' }).suppressIfComputerFocused).toBe(true);
+    expect(resolveAttentionDecision({ policy, event, channel: 'local_notification' }).suppressIfComputerFocused).toBeUndefined();
+  });
+  it('preserves unrelated events and defaults off', () => {
+    const policy = parseAccountSettings({ attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: true } }).attentionDeliveryPolicyV1;
+    expect(resolveAttentionDecision({ policy, event: 'connected_service_quota_blocked', channel: 'expo_push' }).suppressIfComputerFocused).toBeUndefined();
+    expect(resolveAttentionDecision({ policy: parseAccountSettings().attentionDeliveryPolicyV1, event: 'ready', channel: 'expo_push' }).suppressIfComputerFocused).toBeUndefined();
+  });
+});
+
+describe('computer focus preference migration', () => {
+  it('backfills the predecessor opt-in into an established policy without replacing canonical choices', () => {
+    const migrated = parseAccountSettings({
+      notificationsSettingsV1: { mutePhoneWhenComputerFocused: true, ready: true, foregroundBehavior: 'full' },
+      attentionDeliveryPolicyV1: { foregroundBehavior: 'silent', events: { ready: { enabled: false } } },
+    }).attentionDeliveryPolicyV1;
+    expect(migrated.mutePhoneWhenComputerFocused).toBe(true);
+    expect(migrated.foregroundBehavior).toBe('silent');
+    expect(migrated.events.ready.enabled).toBe(false);
+  });
+
+  it('does not treat a malformed explicit canonical value as a predecessor opt-in', () => {
+    const policy = parseAccountSettings({
+      notificationsSettingsV1: { mutePhoneWhenComputerFocused: true },
+      attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: 'true' },
+    }).attentionDeliveryPolicyV1;
+    expect(policy.mutePhoneWhenComputerFocused).toBeUndefined();
+  });
+
+  it('imports the predecessor opt-in once and gives explicit canonical policy authority', () => {
+    const migrated = parseAccountSettings({ notificationsSettingsV1: { mutePhoneWhenComputerFocused: true } });
+    expect(migrated.attentionDeliveryPolicyV1.mutePhoneWhenComputerFocused).toBe(true);
+    expect(parseAccountSettings({
+      notificationsSettingsV1: { mutePhoneWhenComputerFocused: true },
+      attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: false },
+    }).attentionDeliveryPolicyV1.mutePhoneWhenComputerFocused).toBe(false);
+    expect(parseAccountSettings({ attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: 'true' } }).attentionDeliveryPolicyV1.mutePhoneWhenComputerFocused).toBeUndefined();
+  });
+});

@@ -1,4 +1,5 @@
 import { onShutdown } from "@/utils/process/shutdown";
+import { registerUiFocusSocketEvent } from '@/app/api/socket/registerUiFocusSocketEvent';
 import { Fastify } from "./types";
 import { buildMachineActivityEphemeral, buildSessionActivityEphemeral, buildUpdateSessionUpdate, ClientConnection, eventRouter } from "@/app/events/eventRouter";
 import { CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT } from "@/app/events/socketRoomEmitter";
@@ -749,12 +750,14 @@ export function startSocket(app: Fastify) {
         const token = socket.handshake.auth.token as string;
         let connectConvergenceFinished = false;
         let connectReady = false;
+        let finishUiFocusAdmission: ((admitted: boolean) => void) | undefined;
 
         const finalizeConnectConvergence = (result: "ready" | "disconnect_before_ready") => {
             if (connectConvergenceFinished) {
                 return;
             }
             connectConvergenceFinished = true;
+            finishUiFocusAdmission?.(result === 'ready');
             recordSocketConnectConvergencePhase({
                 clientType,
                 transport,
@@ -778,6 +781,12 @@ export function startSocket(app: Fastify) {
             finalizeConnectConvergence("disconnect_before_ready");
             socket.disconnect();
             return;
+        }
+
+        if (clientType === 'user-scoped') {
+            // Retain connect-time events until the canonical admission finishes.
+            const admission = new Promise<boolean>((resolve) => { finishUiFocusAdmission = resolve; });
+            registerUiFocusSocketEvent(socket, admission);
         }
 
         // Socket.IO adds this socket to the namespace before this callback. Join

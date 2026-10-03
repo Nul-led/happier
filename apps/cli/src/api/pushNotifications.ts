@@ -35,6 +35,7 @@ export type PushNotificationDeliveryOptions = Readonly<{
     sound?: ExpoPushMessage['sound']
     priority?: ExpoPushMessage['priority']
     androidSoundId?: string | null
+    suppressIfComputerFocused?: boolean
 }>
 
 interface AccountActivityBadgeSnapshotResponse {
@@ -153,7 +154,7 @@ export class PushNotificationClient {
     /**
      * Fetch all push tokens for the authenticated user
      */
-    async fetchPushTokens(): Promise<PushToken[]> {
+    async fetchPushTokens(options?: Pick<PushNotificationDeliveryOptions, 'suppressIfComputerFocused'>): Promise<PushToken[]> {
         const debugPush = isPushDebugEnabled()
         const nowMs = Date.now()
         if (this.pushTokenFetchFailureCooldownUntilMs > nowMs) {
@@ -167,7 +168,7 @@ export class PushNotificationClient {
         }
         try {
             const response = await axios.get<{ tokens: PushToken[] }>(
-                `${this.baseUrl}/v1/push-tokens`,
+                `${this.baseUrl}/v1/push-tokens${options?.suppressIfComputerFocused === true ? '?suppressIfComputerFocused=1' : ''}`,
                 {
                     headers: {
                         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
@@ -438,7 +439,7 @@ export class PushNotificationClient {
         try {
             // Fetch all push tokens
             if (debugPush) logger.debug('[PUSH] Fetching push tokens...')
-            const tokens = await this.fetchPushTokens()
+            const tokens = await this.fetchPushTokens(options)
             if (debugPush) logger.debug(`[PUSH] Fetched ${tokens.length} push tokens`)
 
             // Log token details for debugging

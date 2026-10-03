@@ -1,4 +1,5 @@
 import { isDesktopHost } from '@/utils/platform/desktopHost';
+import { readHostWindowFocus } from '@/utils/runtime/readHostWindowFocus';
 
 type DesktopWindowDocument = Readonly<{
     visibilityState?: string;
@@ -7,17 +8,6 @@ type DesktopWindowDocument = Readonly<{
 
 function readDesktopWindowDocument(): DesktopWindowDocument | undefined {
     return (globalThis as unknown as { document?: DesktopWindowDocument }).document;
-}
-
-function readHasFocus(doc: DesktopWindowDocument | undefined): boolean | undefined {
-    if (typeof doc?.hasFocus !== 'function') {
-        return undefined;
-    }
-    try {
-        return doc.hasFocus();
-    } catch {
-        return undefined;
-    }
 }
 
 /**
@@ -47,7 +37,7 @@ export function isDesktopMainWindowVisible(): boolean {
         return true;
     }
 
-    return readHasFocus(doc) === true;
+    return readHostWindowFocus() === true;
 }
 
 /**
@@ -70,6 +60,6 @@ export function isDesktopMainWindowFocused(): boolean {
     }
 
     const doc = readDesktopWindowDocument();
-    const focused = readHasFocus(doc);
+    const focused = readHostWindowFocus();
     return focused ?? doc?.visibilityState !== 'hidden';
 }

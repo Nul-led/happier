@@ -6,6 +6,17 @@ import { resolveAttentionDeliveryPolicyDecision } from './attentionDeliveryPolic
 import * as remote from './accountRemoteAlertPolicy.js';
 
 describe('remote alert policy projection', () => {
+  it('carries focus muting without enabling opted-out Home OS alerts', () => {
+    const policy = remote.deriveAccountRemoteAlertPolicyV1({
+      sessionRemoteAlertsEnabled: false,
+      attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: true },
+    });
+    expect(policy?.mutePhoneWhenComputerFocused).toBe(true);
+    expect(policy?.channels.expo_push.enabled).toBe(false);
+    expect(remote.deriveAccountRemoteAlertPolicyV1({
+      attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: false },
+    })).toBeNull();
+  });
   it('derives its strict event and sound maps from the canonical supported subset', () => {
     expect(Object.keys(remote.RemoteAlertEventPolicyMapV1Schema.shape))
       .toEqual(REMOTE_ALERT_ATTENTION_DELIVERY_EVENT_IDS);

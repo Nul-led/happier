@@ -4022,6 +4022,8 @@ export const ca = {
     },
 
     settingsNotifications: {
+        mutePhoneWhenComputerFocusedTitle: "Silencia el telèfon mentre fas servir l’ordinador",
+        mutePhoneWhenComputerFocusedSubtitle: "Silencia els avisos A punt i les sol·licituds mentre alguna finestra de Happier a l’ordinador té el focus. Es reprenen quan cap finestra de l’ordinador té el focus.",
         activitySurfaces: {
             liveActivities: {
                 maxConcurrentNeedsSessionSpecific: 'Disponible amb l\'estratègia Específica de sessió.',

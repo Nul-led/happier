@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
 
 import { PushNotificationClient } from './pushNotifications';
+import { accountSettingsParse } from '@happier-dev/protocol';
+import { dispatchActivityNotificationAsync } from '@/notifications/activity/dispatchActivityNotification';
+import { createSessionNotificationContextFixture } from '@/testkit/backends/sessionFixtures';
 
 vi.mock('axios', () => {
   const isAxiosError = (err: any) => Boolean(err?.isAxiosError);
@@ -76,5 +79,35 @@ describe('PushNotificationClient.fetchPushTokens', () => {
     await expect(client.fetchPushTokens()).resolves.toEqual([]);
 
     expect((axios as any).get).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('focused computer push filtering', () => {
+  it('carries the canonical Account opt-in through real activity delivery to the HTTP boundary', async () => {
+    vi.mocked(axios.get).mockImplementation(async (url) => ({ status: 200, data:
+      String(url).includes('/v2/sessions/')
+        ? { session: createSessionNotificationContextFixture('focus-session') }
+        : { tokens: [], suppressedByFocusedComputer: true },
+    }));
+    const client = new PushNotificationClient('t', 'https://api.example.test');
+    const result = await dispatchActivityNotificationAsync({
+      settings: accountSettingsParse({ attentionDeliveryPolicyV1: { mutePhoneWhenComputerFocused: true } }),
+      pluginNotifications: null,
+      expoPushSender: client,
+      fetchSessionNotificationContext: client.fetchSessionNotificationContext.bind(client),
+      event: { topic: 'ready', sessionId: 'focus-session', waitingForCommandLabel: 'Agent' },
+    });
+    expect(result).toMatchObject({ deliveredChannels: 0 });
+    expect(axios.get).toHaveBeenCalledWith(
+      'https://api.example.test/v1/push-tokens?suppressIfComputerFocused=1', expect.anything(),
+    );
+  });
+  it('requests fresh focus filtering only for opted-in deliveries', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: { tokens: [] } });
+    const client = new PushNotificationClient('t', 'https://api.example.test');
+    await client.sendToAllDevicesAsync('Ready', 'Ready', undefined, { suppressIfComputerFocused: true });
+    expect(axios.get).toHaveBeenLastCalledWith('https://api.example.test/v1/push-tokens?suppressIfComputerFocused=1', expect.anything());
+    await client.fetchPushTokens();
+    expect(axios.get).toHaveBeenLastCalledWith('https://api.example.test/v1/push-tokens', expect.anything());
   });
 });
