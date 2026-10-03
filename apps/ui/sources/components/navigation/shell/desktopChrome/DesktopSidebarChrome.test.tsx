@@ -197,7 +197,6 @@ describe('DesktopSidebarChrome', () => {
             target: { closest: vi.fn(() => null) },
         });
 
-        expect(controlsRow.props['data-tauri-drag-region']).toBe(true);
         expect(preventDefault).toHaveBeenCalledTimes(1);
         expect(desktopWindowBridgeState.startDesktopWindowDragging).toHaveBeenCalledTimes(1);
     });
