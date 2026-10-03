@@ -189,6 +189,42 @@ describe('probeModelsFromAcpBackend', () => {
     }
   }, 20_000);
 
+  it.each([true, false])('keeps session model options on the observed current model (models payload: %s)', async (withModels) => {
+    const fixture = await createProbeTempDir('happier-acp-model-probe-scoped');
+    const sdkEntry = resolveAcpSdkEntryFromCwd(process.cwd());
+    const effort = {
+      id: 'reasoning_effort', name: 'Reasoning effort', category: 'thought_level',
+      type: 'select', currentValue: 'high',
+      options: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+    };
+    const payload = {
+      sessionId: 'scoped-probe-session',
+      ...(withModels ? { models: {
+        currentModelId: 'model-a',
+        availableModels: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }],
+      } } : {}),
+      configOptions: [
+        { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'model-a',
+          options: [{ value: 'model-a', name: 'Model A' }, { value: 'model-b', name: 'Model B' }] },
+        effort,
+        { id: 'approval', name: 'Approval', type: 'select', currentValue: 'ask',
+          options: [{ value: 'ask', name: 'Ask' }] },
+      ],
+    };
+    const agentPath = await writeFakeAcpAgentScript({ dir: fixture.dir, sdkEntry, sessionPayloadSource: JSON.stringify(payload) });
+    const backend = new AcpBackend(createProbeBackendOptions({ cwd: fixture.dir, agentPath }));
+    try {
+      const models = await probeModelsFromAcpBackend({ backend, timeoutMs: 10_000 });
+      const { category: _category, ...expectedEffort } = effort;
+      expect(models?.find((model) => model.id === 'model-a')?.modelOptions).toEqual([expectedEffort]);
+      expect(models?.find((model) => model.id === 'model-b')?.modelOptions).toBeUndefined();
+      expect(models?.find((model) => model.id === 'default')?.modelOptions).toBeUndefined();
+    } finally {
+      await backend.dispose();
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
   it('does not leak unhandled rejections when startSession times out first', async () => {
     let rejectStartSession!: (reason?: unknown) => void;
     const startSessionPromise = new Promise<Awaited<ReturnType<AgentBackend['startSession']>>>((_resolve, reject) => {
