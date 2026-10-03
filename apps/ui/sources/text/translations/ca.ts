@@ -7294,7 +7294,7 @@ export const ca = {
         dropToAttach: 'Deixa anar per adjuntar fitxers',
         providerUsage: {
             title: 'Ús del proveïdor',
-            accessibilityLabel: ({ value }: { value: string }) => `Ús del proveïdor: queda ${value}`,
+            accessibilityLabel: ({ value }: { value: string }) => `Ús del proveïdor: ${value}`,
             remaining: ({ percent }: { percent: string }) => `queda ${percent}`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `queda ${percent} · es reinicia d'aquí a ${reset}`,
             usedCount: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} usat`,
@@ -7425,6 +7425,7 @@ export const ca = {
             },
         },
         context: {
+            badgeLabel: 'Context',
             remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
             windowTitle: 'Finestra de context',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
@@ -9684,8 +9685,10 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Ús del proveïdor',
-              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor.',
+              footer: 'Controla l’indicador de quota que es mostra al costat del compositor quan hi ha dades fiables d’ús del proveïdor. Fixa una finestra d’ús en un compte connectat per mostrar-la com a indicador addicional.',
               visibilityTitle: 'Mostra l’indicador d’ús del proveïdor',
+              labelsTitle: 'Mostra les etiquetes',
+              labelsSubtitle: 'Posa nom als indicadors de context i d’ús al costat del compositor.',
               visibilityEnabledSubtitle: 'Mostra la quota restant del proveïdor al costat del compositor quan estigui disponible.',
               visibilityHiddenSubtitle: 'Amaga la quota del proveïdor al compositor.',
               windowTitle: 'Finestra de l’indicador',

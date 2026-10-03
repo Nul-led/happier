@@ -8371,7 +8371,7 @@ localTailscale: {
     providerUsage: {
       title: "プロバイダー使用量",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `プロバイダー使用量: 残り ${value}`,
+        `プロバイダー使用量: ${value}`,
       remaining: ({ percent }: { percent: string }) => `残り ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `残り ${percent} · ${reset} 後にリセット`,
@@ -8514,6 +8514,7 @@ localTailscale: {
       },
     },
     context: {
+      badgeLabel: "コンテキスト",
       remaining: ({ percent }: { percent: number }) => `残り ${percent}%`,
       windowTitle: "コンテキストウィンドウ",
       usedDetail: ({
@@ -10832,8 +10833,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "プロバイダー使用量",
         footer:
-          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。",
+          "信頼できるプロバイダー使用量があるとき、入力欄の横に表示するクォータゲージを設定します。接続済みアカウントで使用量の期間をピン留めすると、追加のゲージとして表示されます。",
         visibilityTitle: "プロバイダー使用量ゲージを表示",
+        labelsTitle: "ラベルを表示",
+        labelsSubtitle: "入力欄の横にあるコンテキストと使用量のゲージに名前を付けます。",
         visibilityEnabledSubtitle:
           "利用可能な場合、入力欄の横にプロバイダーの残りクォータを表示します。",
         visibilityHiddenSubtitle: "入力欄のプロバイダークォータを非表示にします。",

@@ -13,6 +13,7 @@ import { t } from '@/text';
 
 import { AgentInputContentPopover } from '../components/AgentInputContentPopover';
 import { motionTokens } from '@/components/ui/motion/motionTokens';
+import { instrumentStripStyles } from './instrumentStripStyles';
 
 /**
  * Plan/quota usage instrument: the ring is the session's tightest limit (the canonical System-B quota
@@ -30,6 +31,8 @@ export type QuotaRingInstrumentProps = Readonly<{
     recoveryCreditPending?: boolean;
     /** Show the provider caption under the ring (≥360px available width). */
     showProviderGlyph: boolean;
+    /** Also name a lone ring; multiple rings always show their usage windows. */
+    showLabels?: boolean;
     testID?: string;
 }>;
 
@@ -46,8 +49,23 @@ export const QuotaRingInstrument = React.memo(function QuotaRingInstrument(props
     const { mode, toggle, close, hoverProps } = useHoverPreviewPopover({ enabled: Platform.OS === 'web' });
 
     const { viewModel } = props;
+    // The main ring first, then the account's pinned meters; each number is what is left.
+    const rings = viewModel.usageRings.length > 0
+        ? viewModel.usageRings
+        : [{
+            meterId: viewModel.effectiveMeter.meterId,
+            label: viewModel.effectiveMeter.label,
+            usedPct: viewModel.usedPct,
+            ringValueLabel: viewModel.ringValueLabel,
+            valueLabel: viewModel.valueLabel,
+            tone: viewModel.tone,
+        }];
+    // One ring reads as before; extra rings are named so each one can be told apart.
+    const ringAccessibilityValues = rings.length === 1
+        ? [viewModel.badgeLabel]
+        : rings.map((ring) => `${ring.label} ${ring.valueLabel}`);
     const accessibilityLabel = t('agentInput.providerUsage.accessibilityLabel', {
-        value: viewModel.badgeLabel,
+        value: ringAccessibilityValues.join(', '),
     });
     const providerCaption = viewModel.scopePrefix ?? viewModel.providerDisplayName;
 
@@ -62,17 +80,35 @@ export const QuotaRingInstrument = React.memo(function QuotaRingInstrument(props
                     hitSlop={12}
                     style={({ pressed }) => (pressed ? styles.triggerPressed : null)}
                 >
-                    <TokenUsageRing
-                        used={viewModel.usedPct}
-                        limit={100}
-                        label={accessibilityLabel}
-                        value={viewModel.ringValueLabel}
-                        tone={mapQuotaToneToTokenTone(viewModel.tone)}
-                        size={16}
-                        strokeWidth={2}
-                        ringTestID="session-instrument-quota-ring-arc"
-                        valueTestID="session-instrument-quota-ring-value"
-                    />
+                    <View style={styles.rings}>
+                        {rings.map((ring, index) => {
+                            const testIDSuffix = index === 0 ? '' : `:${ring.meterId}`;
+                            return (
+                                <View key={ring.meterId} style={styles.ring}>
+                                    {props.showLabels === true || rings.length > 1 ? (
+                                        <Text
+                                            testID={`session-instrument-quota-meter-label${testIDSuffix}`}
+                                            style={instrumentStripStyles.instrumentLabelText}
+                                            numberOfLines={1}
+                                        >
+                                            {ring.label}
+                                        </Text>
+                                    ) : null}
+                                    <TokenUsageRing
+                                        used={ring.usedPct}
+                                        limit={100}
+                                        label={rings.length === 1 ? accessibilityLabel : ringAccessibilityValues[index]!}
+                                        value={ring.ringValueLabel}
+                                        tone={mapQuotaToneToTokenTone(ring.tone)}
+                                        size={16}
+                                        strokeWidth={2}
+                                        ringTestID={`session-instrument-quota-ring-arc${testIDSuffix}`}
+                                        valueTestID={`session-instrument-quota-ring-value${testIDSuffix}`}
+                                    />
+                                </View>
+                            );
+                        })}
+                    </View>
                 </Pressable>
                 {props.showProviderGlyph && providerCaption ? (
                     <Text style={styles.providerCaption} numberOfLines={1}>
@@ -112,6 +148,16 @@ const quotaStyles = StyleSheet.create((theme) => ({
     },
     triggerPressed: {
         opacity: motionTokens.press.opacitySubtle,
+    },
+    rings: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    ring: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
     },
     providerCaption: {
         fontSize: 8,

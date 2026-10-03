@@ -8090,7 +8090,7 @@ export const fr = {
     providerUsage: {
       title: "Usage du provider",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `Usage du provider : ${value} restants`,
+        `Usage du provider : ${value}`,
       remaining: ({ percent }: { percent: string }) => `il reste ${percent} restant`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `il reste ${percent} restant · réinitialisation dans ${reset}`,
@@ -8234,6 +8234,7 @@ export const fr = {
       },
     },
     context: {
+      badgeLabel: "Contexte",
       remaining: ({ percent }: { percent: number }) => `${percent}% restant`,
       windowTitle: "Fenêtre de contexte",
       usedDetail: ({
@@ -10561,8 +10562,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "Usage du provider",
         footer:
-          "Contrôle la jauge de quota affichée à côté du composer quand l’usage du provider est fiable.",
+          "Contrôle la jauge de quota affichée à côté du composer quand l’usage du provider est fiable. Épinglez une fenêtre d’usage sur un compte connecté pour l’afficher comme jauge supplémentaire.",
         visibilityTitle: "Afficher la jauge d’usage du provider",
+        labelsTitle: "Afficher les libellés",
+        labelsSubtitle: "Nomme les jauges de contexte et d’usage à côté du composer.",
         visibilityEnabledSubtitle:
           "Affiche le quota restant du provider à côté du composer quand il est disponible.",
         visibilityHiddenSubtitle: "Masque le quota du provider près du composer.",

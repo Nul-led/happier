@@ -8220,7 +8220,7 @@ export const pt = {
     providerUsage: {
       title: "Uso do provedor",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `Uso do provedor: ${value} restante`,
+        `Uso do provedor: ${value}`,
       remaining: ({ percent }: { percent: string }) => `${percent} restante`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `${percent} restante · redefine em ${reset}`,
@@ -8363,6 +8363,7 @@ export const pt = {
       },
     },
     context: {
+      badgeLabel: "Contexto",
       remaining: ({ percent }: { percent: number }) => `${percent}% restante`,
       windowTitle: "Janela de contexto",
       usedDetail: ({
@@ -10691,8 +10692,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "Uso do provedor",
         footer:
-          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor.",
+          "Controla o medidor de cota mostrado ao lado do compositor quando há uso confiável do provedor. Fixe uma janela de uso numa conta conectada para mostrá-la como medidor adicional.",
         visibilityTitle: "Mostrar medidor de uso do provedor",
+        labelsTitle: "Mostrar rótulos",
+        labelsSubtitle: "Nomeia os medidores de contexto e de uso ao lado do compositor.",
         visibilityEnabledSubtitle:
           "Mostra a cota restante do provedor ao lado do compositor quando disponível.",
         visibilityHiddenSubtitle: "Oculta a cota do provedor no compositor.",

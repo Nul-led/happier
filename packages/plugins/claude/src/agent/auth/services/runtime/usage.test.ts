@@ -6,6 +6,34 @@ import {
 } from './usage.js';
 
 describe('mapClaudeRuntimeRateLimitsToUsageObservation', () => {
+  it.each(['allowed', 'allowed_warning', 'rejected'])('reads every unified SDK window for %s events without mixing fraction and percent units', (status) => {
+    const observation = mapClaudeRuntimeRateLimitsToUsageObservation({
+      type: 'rate_limit_event', rate_limit_info: { status, rateLimitType: 'five_hour', unifiedWindows: {
+        five_hour: { utilization: 1.0234, resetsAt: 1_790_378_400 },
+        seven_day: { utilization: 0.2 },
+        seven_day_fable: { utilization: 0.612 },
+        seven_day_opus: { utilization: 0.4 },
+        seven_day_sonnet: { utilization: 0.5 },
+        invalid: { utilization: 'unknown' },
+      } },
+    });
+    expect(observation).toMatchObject({ status: 'loaded_data', meters: [
+      { meterId: 'five_hour', label: '5-hour', utilizationPct: 100, resetsAtMs: 1_790_378_400_000 },
+      { meterId: 'seven_day', label: 'Weekly', utilizationPct: 20 },
+      { meterId: 'seven_day_fable', label: 'Weekly (Fable)', utilizationPct: 61.2 },
+      { meterId: 'seven_day_opus', label: 'Weekly (Opus)', utilizationPct: 40 },
+      { meterId: 'seven_day_sonnet', label: 'Weekly (Sonnet)', utilizationPct: 50 },
+    ] });
+  });
+
+  it('retains the older single-window SDK event without interpreting statusline percentages as fractions', () => {
+    expect(mapClaudeRuntimeRateLimitsToUsageObservation({ type: 'rate_limit_event', rate_limit_info: {
+      status: 'allowed', rateLimitType: 'five_hour', utilization: 0.82,
+    } })).toMatchObject({ status: 'loaded_data', meters: [{ meterId: 'five_hour', utilizationPct: 82 }] });
+    expect(mapClaudeRuntimeRateLimitsToUsageObservation({ rate_limits: { five_hour: { utilization: 0.82 } } }))
+      .toMatchObject({ status: 'loaded_data', meters: [{ utilizationPct: 0.82 }] });
+  });
+
   it('distinguishes missing statusline rate limits from loaded-empty rate limits', () => {
     expect(mapClaudeRuntimeRateLimitsToUsageObservation({})).toEqual({ status: 'not_loaded' });
     expect(mapClaudeRuntimeRateLimitsToUsageObservation({ rate_limits: {} })).toEqual({
@@ -71,6 +99,21 @@ describe('mapClaudeRuntimeRateLimitsToUsageObservation', () => {
 });
 
 describe('mapClaudeRateLimitEventToUsageDetails', () => {
+  it.each([undefined, 0.95])('uses the matching rejected unified window even with conflicting top-level utilization %s', (utilization) => {
+    const event = { type: 'rate_limit_event', rate_limit_info: {
+      status: 'rejected', rateLimitType: 'five_hour', utilization, unifiedWindows: {
+        five_hour: { utilization: 1, resetsAt: 1_790_378_400 },
+        seven_day: { utilization: 0.2, resetsAt: 1_790_378_500 },
+      },
+    } };
+    expect(mapClaudeRateLimitEventToUsageDetails(event)).toMatchObject({
+      providerLimitId: 'five_hour', utilization: 100, resetAtMs: 1_790_378_400_000,
+    });
+    expect(mapClaudeRateLimitEventToUsageDetails({ ...event, rate_limit_info: {
+      ...event.rate_limit_info, rateLimitType: 'unknown_window',
+    } })).toMatchObject({ providerLimitId: 'unknown_window', utilization: utilization === undefined ? null : 95, resetAtMs: null });
+  });
+
   it('maps synthetic Claude assistant API-error rate-limit records that report 429 via error_status', () => {
     expect(mapClaudeRateLimitEventToUsageDetails({
       type: 'assistant',

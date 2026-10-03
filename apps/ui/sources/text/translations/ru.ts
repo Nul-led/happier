@@ -8093,7 +8093,7 @@ export const ru = {
       providerUsage: {
         title: "Использование провайдера",
         accessibilityLabel: ({ value }: { value: string }) =>
-          `Использование провайдера: осталось ${value}`,
+          `Использование провайдера: ${value}`,
         remaining: ({ percent }: { percent: string }) => `осталось ${percent}`,
         remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
           `осталось ${percent} · сброс через ${reset}`,
@@ -8237,6 +8237,7 @@ export const ru = {
       },
     },
     context: {
+      badgeLabel: "Контекст",
       remaining: ({ percent }: { percent: number }) => `Осталось ${percent}%`,
       windowTitle: "Окно контекста",
       usedDetail: ({
@@ -10559,8 +10560,10 @@ settingsSession: {
       providerUsageGauge: {
         title: "Использование провайдера",
         footer:
-          "Управляет индикатором квоты рядом с полем ввода, когда доступны надёжные данные использования провайдера.",
+          "Управляет индикатором квоты рядом с полем ввода, когда доступны надёжные данные использования провайдера. Закрепите окно использования в подключённом аккаунте, чтобы показывать его как дополнительный индикатор.",
         visibilityTitle: "Показывать индикатор использования провайдера",
+        labelsTitle: "Показывать подписи",
+        labelsSubtitle: "Подписывает индикаторы контекста и использования рядом с полем ввода.",
         visibilityEnabledSubtitle:
           "Показывать оставшуюся квоту провайдера рядом с полем ввода, когда она доступна.",
         visibilityHiddenSubtitle: "Скрыть квоту провайдера рядом с полем ввода.",

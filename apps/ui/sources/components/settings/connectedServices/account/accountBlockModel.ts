@@ -20,9 +20,9 @@ export type AccountUsageRow = Readonly<{
     label: string;
     tone: MeterTone;
     /** Remaining fraction in 0..1 (the capacity rings read it). */
-    remaining: number;
+    remaining: number | null;
     /** What is left, 0..100 (the quota row reads it). */
-    remainingPct: number;
+    remainingPct: number | null;
     resetsAt: number | null;
 }>;
 
@@ -46,7 +46,7 @@ export function resolveAccountUsageRows(
         meterId: row.meterId,
         label: row.label,
         tone: resolveQuotaTone(row.remainingPct),
-        remaining: clamp01(row.remainingPct / 100),
+        remaining: row.remainingPct === null ? null : clamp01(row.remainingPct / 100),
         remainingPct: row.remainingPct,
         resetsAt: row.resetsAt,
     }));
@@ -94,7 +94,7 @@ export function resolveAccountCapacityRings(
     usageRows: ReadonlyArray<AccountUsageRow>,
 ): CapacityRingDatum[] {
     return usageRows
-        .map((row) => ({ ratio: row.remaining, tone: row.tone }))
+        .flatMap((row) => row.remaining === null ? [] : [{ ratio: row.remaining, tone: row.tone }])
         .sort((a, b) => a.ratio - b.ratio)
         .slice(0, MAX_CAPACITY_RINGS);
 }

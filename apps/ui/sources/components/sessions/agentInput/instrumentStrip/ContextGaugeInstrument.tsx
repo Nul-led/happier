@@ -19,6 +19,8 @@ export type ContextGaugeInstrumentProps = Readonly<{
     model: InstrumentStripContextModel;
     /** Show the trailing `%` label (≥360px available width). */
     showPercentText: boolean;
+    /** Name the gauge "Context" (an opt-in setting, off by default). */
+    showLabel?: boolean;
     isStreaming: boolean;
     /** On-demand provider refresh (Claude `getContextUsage`); no-op otherwise. */
     onRefresh: () => void;
@@ -60,6 +62,11 @@ export const ContextGaugeInstrument = React.memo(function ContextGaugeInstrument
     return (
         <>
             <View ref={anchorRef} style={instrumentStripStyles.instrumentSlot}>
+                {props.showLabel === true ? (
+                    <Text testID="session-instrument-context-label" style={instrumentStripStyles.instrumentLabelText} numberOfLines={1}>
+                        {t('agentInput.context.badgeLabel')}
+                    </Text>
+                ) : null}
                 <ContextGauge
                     usedPct={model.usedPct}
                     size={16}

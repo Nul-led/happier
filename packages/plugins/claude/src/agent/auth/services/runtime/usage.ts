@@ -1,3 +1,4 @@
+import { resolveClaudeUsageWindowLabel } from '../usage/windowLabel.js';
 import {
   parseClaudeProviderTimestampMs,
   parseClaudeUsageLimitReset,
@@ -36,14 +37,6 @@ export type NormalizedClaudeRuntimeRateLimitsObservation =
   | Readonly<{ status: 'not_loaded' }>
   | Readonly<{ status: 'loaded_empty'; meters: readonly [] }>
   | Readonly<{ status: 'loaded_data'; meters: readonly NormalizedClaudeRuntimeRateLimitMeter[] }>;
-
-const RUNTIME_RATE_LIMIT_LABELS: Readonly<Record<string, string>> = Object.freeze({
-  five_hour: '5-hour',
-  seven_day: 'Weekly',
-  seven_day_oauth_apps: 'Weekly (OAuth apps)',
-  seven_day_sonnet: 'Weekly (Sonnet)',
-  seven_day_opus: 'Weekly (Opus)',
-});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -96,16 +89,47 @@ function buildRuntimeRateLimitMeter(
   if (utilizationPct === null && resetsAtMs === null) return null;
   return {
     meterId,
-    label: RUNTIME_RATE_LIMIT_LABELS[meterId] ?? meterId,
+    label: resolveClaudeUsageWindowLabel(meterId),
     utilizationPct,
     resetsAtMs,
     source: 'runtimeSignal',
   };
 }
 
+function readSdkUtilizationPercent(value: unknown, unified: boolean): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const percent = unified ? Math.round(value * 1000) / 10 : value >= 0 && value <= 1 ? value * 100 : value;
+  return readUtilization(percent);
+}
+
+// SDK usage is fractional; statusline rate_limits is already a percentage.
+// Keep both inputs at this observer so the runtime recorder has one owner.
+function readSdkRateLimitObservation(value: unknown): NormalizedClaudeRuntimeRateLimitsObservation | null {
+  if (!isRecord(value) || value.type !== 'rate_limit_event' || !isRecord(value.rate_limit_info)) return null;
+  const info = value.rate_limit_info;
+  const unifiedWindows = isRecord(info.unifiedWindows) ? info.unifiedWindows : {};
+  const meters = Object.entries(unifiedWindows).flatMap(([meterId, raw]) => {
+    if (!isRecord(raw)) return [];
+    const utilizationPct = readSdkUtilizationPercent(raw.utilization, true);
+    if (utilizationPct === null) return [];
+    return [{ meterId, label: resolveClaudeUsageWindowLabel(meterId), utilizationPct,
+      resetsAtMs: readTimestampMs(raw.resetsAt), source: 'runtimeSignal' as const }];
+  });
+  if (meters.length > 0) return { status: 'loaded_data', meters };
+  const meterId = readString(info.rateLimitType ?? info.rate_limit_type);
+  const utilizationPct = readSdkUtilizationPercent(info.utilization, false);
+  if (meterId && utilizationPct !== null) {
+    return { status: 'loaded_data', meters: [{ meterId, label: resolveClaudeUsageWindowLabel(meterId), utilizationPct,
+      resetsAtMs: readTimestampMs(info.resetsAt ?? info.resets_at), source: 'runtimeSignal' }] };
+  }
+  return null;
+}
+
 export function mapClaudeRuntimeRateLimitsToUsageObservation(
   value: unknown,
 ): NormalizedClaudeRuntimeRateLimitsObservation {
+  const sdkObservation = readSdkRateLimitObservation(value);
+  if (sdkObservation) return sdkObservation;
   const rawRateLimits = readStatuslineRateLimits(value);
   if (rawRateLimits === undefined) return { status: 'not_loaded' };
 
@@ -378,6 +402,10 @@ export function mapClaudeRateLimitEventToUsageDetails(event: unknown): Normalize
   const status = readString(info.status);
   if (status !== 'rejected') return null;
   const rateLimitType = readString(info.rateLimitType ?? info.rate_limit_type);
+  const observation = readSdkRateLimitObservation(event);
+  const limitedWindow = observation?.status === 'loaded_data'
+    ? observation.meters.find((meter) => meter.meterId === rateLimitType)
+    : undefined;
   const overageStatusRaw = info.overageStatus ?? info.overage_status;
   const overageStatus = normalizeOverageStatus(overageStatusRaw);
   const overageResetAtMs = readTimestampMs(info.overageResetsAt ?? info.overage_resets_at);
@@ -385,13 +413,13 @@ export function mapClaudeRateLimitEventToUsageDetails(event: unknown): Normalize
 
   return {
     v: 1,
-    resetAtMs: readTimestampMs(info.resetsAt ?? info.resets_at),
+    resetAtMs: readTimestampMs(info.resetsAt ?? info.resets_at) ?? limitedWindow?.resetsAtMs ?? null,
     retryAfterMs: null,
     quotaScope: 'account',
     recoverability: 'wait',
     ...(rateLimitType ? { providerLimitId: rateLimitType } : {}),
     planType: null,
-    utilization: readUtilization(info.utilization),
+    utilization: limitedWindow?.utilizationPct ?? readSdkUtilizationPercent(info.utilization, false),
     overage: overageStatusRaw === undefined && overageResetAtMs === null && overageDisabledReason === null
       ? null
       : {

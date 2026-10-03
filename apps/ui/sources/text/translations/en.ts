@@ -8457,7 +8457,7 @@ export const en = {
         dropToAttach: 'Drop to attach files',
         providerUsage: {
             title: 'Provider usage',
-            accessibilityLabel: ({ value }: { value: string }) => `Provider usage: ${value} left`,
+            accessibilityLabel: ({ value }: { value: string }) => `Provider usage: ${value}`,
             remaining: ({ percent }: { percent: string }) => `${percent} left`,
             remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) => `${percent} left · resets in ${reset}`,
             usedCount: ({ used, limit }: { used: string; limit: string }) => `${used}/${limit} used`,
@@ -8591,6 +8591,7 @@ export const en = {
             },
         },
         context: {
+            badgeLabel: 'Context',
             remaining: ({ percent }: { percent: number }) => `${percent}% left`,
             windowTitle: 'Context Window',
             usedDetail: ({ percent, used, total }: { percent: string; used: string; total: string }) =>
@@ -11068,8 +11069,10 @@ settingsSession: {
           },
           providerUsageGauge: {
               title: 'Provider usage',
-              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available.',
+              footer: 'Controls the quota gauge shown beside the composer when reliable provider usage is available. Pin a usage window on a connected account to show it as an extra gauge.',
               visibilityTitle: 'Show provider usage gauge',
+              labelsTitle: 'Show labels',
+              labelsSubtitle: 'Name the context and usage gauges beside the composer.',
               visibilityEnabledSubtitle: 'Show remaining provider quota next to the composer when available.',
               visibilityHiddenSubtitle: 'Hide provider quota from the composer.',
               windowTitle: 'Gauge window',

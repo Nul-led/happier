@@ -116,14 +116,6 @@ vi.mock('@/sync/domains/state/storage', () => ({
     useSessions: () => sessionState.sessions,
 }));
 
-vi.mock('@/sync/store/hooks', () => ({
-    useSetting: () => ({}),
-}));
-
-vi.mock('@/sync/store/settingsWriters', () => ({
-    useApplySettings: () => vi.fn(),
-}));
-
 vi.mock('./useCredentialScopedAccountModeResolver', () => ({
     useCredentialScopedAccountModeResolver: () => vi.fn(),
 }));

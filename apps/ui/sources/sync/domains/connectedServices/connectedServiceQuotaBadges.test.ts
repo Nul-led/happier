@@ -18,6 +18,15 @@ describe('buildSummaryMeters', () => {
     })));
   });
 
+  it('keeps unpinned and unmeasured windows in details for either summary strategy', () => {
+    const reached = { ...meters[0]!, meterId: 'reached', label: 'Reached', utilizationPct: null, remainingPct: null };
+    for (const strategy of ['primary', 'min_remaining'] as const) {
+      const summary = buildSummaryMeters([...meters, reached], ['weekly'], strategy);
+      expect(summary.map((meter) => meter.meterId).sort()).toEqual([...meters.map((meter) => meter.meterId), 'reached'].sort());
+      expect(summary.find((meter) => meter.meterId === 'reached')).toMatchObject({ remainingPct: null, utilizationPct: null });
+    }
+  });
+
   it('keeps every present pinned meter in the chosen order, dropping only absent meters', () => {
     const pinned = ['extra-usage', 'weekly-opus', 'missing', 'weekly-sonnet', 'session', 'weekly'];
     expect(buildSummaryMeters(meters, pinned, 'primary').map((meter) => meter.meterId))

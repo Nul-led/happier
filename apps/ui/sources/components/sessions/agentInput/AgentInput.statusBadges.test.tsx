@@ -174,6 +174,7 @@ describe('AgentInput status badges', () => {
                 resetsAt: null,
                 tone: 'warning',
             }],
+            usageRings: [],
         };
         const onProviderUsageRecoveryCreditPress = vi.fn();
 

@@ -81,6 +81,7 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
     const { theme } = useUnistyles();
     const motion = useMotionPreferences();
     const alwaysShowContextSize = useSetting('alwaysShowContextSize') === true;
+    const showUsageLabels = useSetting('sessionUsageGaugeLabels') === true;
     const accountScopeResolution = useServerCredentialAccountScopeResolution(props.serverId);
     const accountScope = props.serverId === undefined ? undefined
         : accountScopeResolution.kind === 'bound' ? accountScopeResolution.scope : null;
@@ -185,6 +186,7 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
                     key="context"
                     model={model.context}
                     showPercentText={!compact}
+                    showLabel={showUsageLabels}
                     isStreaming={isStreaming}
                     onRefresh={model.refreshContextUsage}
                 />,
@@ -210,6 +212,7 @@ export const SessionInstrumentStrip = React.memo(function SessionInstrumentStrip
                     onRecoveryCreditPress={props.quota.onRecoveryCreditPress}
                     recoveryCreditPending={props.quota.recoveryCreditPending}
                     showProviderGlyph={!compact}
+                    showLabels={showUsageLabels}
                 />,
             );
         }

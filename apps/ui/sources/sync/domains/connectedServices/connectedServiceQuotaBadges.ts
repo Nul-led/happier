@@ -99,17 +99,24 @@ export function computeConnectedServiceQuotaSummaryBadges(params: Readonly<{
   }));
 }
 
-/** Usage cards select and project the same meters as the settings-row badges. */
+/** Usage details retain all reported meters; pins and strategy only order them. */
 export function buildSummaryMeters(
   meters: ReadonlyArray<ConnectedServiceQuotaMeterV1>,
   pinnedMeterIds: ReadonlyArray<string>,
   strategy: ConnectedServiceQuotaSummaryStrategy,
 ): ReadonlyArray<ConnectedServiceQuotaSummaryMeter> {
-  return selectConnectedServiceQuotaSummaryMeters({
+  const meterIds = [...new Set([...pinnedMeterIds, ...meters.map((meter) => meter.meterId)])];
+  const selected = selectConnectedServiceQuotaSummaryMeters({
     meters,
-    meterIds: pinnedMeterIds.length > 0 ? pinnedMeterIds : meters.map((meter) => meter.meterId),
+    meterIds,
     strategy,
-  }).flatMap((selected) => selected.meter ? [{
+  });
+  const selectedIds = new Set(selected.map((meter) => meter.meterId));
+  const remaining = selectConnectedServiceQuotaSummaryMeters({
+    meters,
+    meterIds: meterIds.filter((meterId) => !selectedIds.has(meterId)),
+  });
+  return [...selected, ...remaining].flatMap((selected) => selected.meter ? [{
     meterId: selected.meterId,
     label: selected.label,
     utilizationPct: selected.utilizationPct,

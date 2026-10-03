@@ -1,5 +1,7 @@
 import { StyleSheet } from 'react-native-unistyles';
 
+import { Typography } from '@/constants/Typography';
+
 /**
  * Layout for the session instrument strip. One 28-high row: connection/working
  * status pinned left, a flexible spacer, then the right-aligned instrument
@@ -46,6 +48,11 @@ export const instrumentStripStyles = StyleSheet.create((theme) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 4,
+    },
+    /** The opt-in name beside a gauge ("Context", "5-hour"): smaller than the values. */
+    instrumentLabelText: {
+        ...Typography.pillLabel(),
+        color: theme.colors.text.secondary,
     },
     instrumentValueText: {
         fontSize: 12,

@@ -7,8 +7,10 @@ import {
   resolveConnectedServiceProfileLabel,
   resolveQualifiedConnectedAccountDefaultId,
   resolveQualifiedConnectedAccountLabel,
+  resolveQualifiedConnectedAccountProfilePreference,
   updateQualifiedConnectedAccountDefaultId,
   updateQualifiedConnectedAccountLabel,
+  updateQualifiedConnectedAccountProfilePreference,
 } from './connectedServiceProfilePreferences';
 
 const qualifiedGithubService = {
@@ -68,6 +70,31 @@ describe('connectedServiceProfilePreferences', () => {
       defaultProfileByServiceId: { anthropic: 'missing' },
     });
     expect(selected).toBe('personal');
+  });
+
+  it('reads and writes a per-account preference through the qualified key and its released alias', () => {
+    const account = { service: qualifiedGithubService, legacyServiceId: 'github' as const, accountId: 'work' };
+    const qualifiedKey = 'happier.scm.forge.github%2Fgithub-account/work';
+
+    expect(resolveQualifiedConnectedAccountProfilePreference({
+      ...account,
+      valuesByKey: { 'github/work': ['weekly'], 'github/other': ['daily'] },
+    })).toEqual(['weekly']);
+    expect(resolveQualifiedConnectedAccountProfilePreference({
+      ...account,
+      valuesByKey: { 'github/work': ['weekly'], [qualifiedKey]: ['five_hour'] },
+    })).toEqual(['five_hour']);
+
+    expect(updateQualifiedConnectedAccountProfilePreference({
+      ...account,
+      valuesByKey: { 'github/work': ['weekly'], 'github/other': ['daily'] },
+      value: ['weekly', 'five_hour'],
+    })).toEqual({ 'github/other': ['daily'], [qualifiedKey]: ['weekly', 'five_hour'] });
+    expect(updateQualifiedConnectedAccountProfilePreference({
+      ...account,
+      valuesByKey: { [qualifiedKey]: ['weekly'], 'github/other': ['daily'] },
+      value: null,
+    })).toEqual({ 'github/other': ['daily'] });
   });
 
   it('prefers qualified account preferences and falls back only to its mapped built-in key', () => {

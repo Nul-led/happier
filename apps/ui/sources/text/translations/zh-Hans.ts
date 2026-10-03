@@ -7892,7 +7892,7 @@ export const zhHans = {
     providerUsage: {
       title: "提供商使用量",
       accessibilityLabel: ({ value }: { value: string }) =>
-        `提供商使用量：剩余 ${value}`,
+        `提供商使用量：${value}`,
       remaining: ({ percent }: { percent: string }) => `剩余 ${percent}`,
       remainingWithReset: ({ percent, reset }: { percent: string; reset: string }) =>
         `剩余 ${percent} · ${reset} 后重置`,
@@ -8035,6 +8035,7 @@ export const zhHans = {
       },
     },
     context: {
+      badgeLabel: "上下文",
       remaining: ({ percent }: { percent: number }) => `剩余 ${percent}%`,
       windowTitle: "上下文窗口",
       usedDetail: ({
@@ -10333,8 +10334,10 @@ settingsSession: {
     providerUsageGauge: {
       title: "提供方使用量",
       footer:
-        "当有可靠的提供方使用量数据时，控制输入框旁显示的配额仪表。",
+        "当有可靠的提供方使用量数据时，控制输入框旁显示的配额仪表。在已连接的账号上固定一个用量窗口，即可将其显示为额外的仪表。",
       visibilityTitle: "显示提供方使用量仪表",
+      labelsTitle: "显示标签",
+      labelsSubtitle: "为输入框旁的上下文和用量仪表加上名称。",
       visibilityEnabledSubtitle:
         "可用时在输入框旁显示提供方剩余配额。",
       visibilityHiddenSubtitle: "在输入框旁隐藏提供方配额。",

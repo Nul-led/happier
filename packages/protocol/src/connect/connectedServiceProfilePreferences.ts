@@ -57,6 +57,46 @@ export function resolveQualifiedConnectedAccountDefaultId(params: Readonly<{
   return fallback;
 }
 
+/** One per-account preference: the qualified key first, then its released built-in alias. */
+export function resolveQualifiedConnectedAccountProfilePreference<T>(params: Readonly<{
+  valuesByKey: Readonly<Record<string, T | undefined>>;
+  service: PluginContributionIdentityV1;
+  legacyServiceId: ConnectedServiceId | null;
+  accountId: string;
+}>): T | undefined {
+  for (const serviceId of qualifiedConnectedAccountPreferenceServiceKeys(params)) {
+    const value = params.valuesByKey[connectedServiceProfileKey({ serviceId, profileId: params.accountId })]
+      ?? params.valuesByKey[connectedServiceProfileLegacyKey({ serviceId, profileId: params.accountId })];
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+/** Writes only the qualified key and drops the account's aliases; `null` removes the preference. */
+export function updateQualifiedConnectedAccountProfilePreference<T>(params: Readonly<{
+  valuesByKey: Readonly<Record<string, T | undefined>>;
+  service: PluginContributionIdentityV1;
+  legacyServiceId: ConnectedServiceId | null;
+  accountId: string;
+  value: T | null;
+}>): Record<string, T> {
+  const next: Record<string, T> = {};
+  for (const [key, value] of Object.entries(params.valuesByKey)) {
+    if (value !== undefined) next[key] = value;
+  }
+  for (const serviceId of qualifiedConnectedAccountPreferenceServiceKeys(params)) {
+    delete next[connectedServiceProfileKey({ serviceId, profileId: params.accountId })];
+    delete next[connectedServiceProfileLegacyKey({ serviceId, profileId: params.accountId })];
+  }
+  if (params.value !== null) {
+    next[connectedServiceProfileKey({
+      serviceId: qualifiedConnectedAccountPreferenceServiceKey(params.service),
+      profileId: params.accountId,
+    })] = params.value;
+  }
+  return next;
+}
+
 export function updateQualifiedConnectedAccountLabel(params: Readonly<{
   service: PluginContributionIdentityV1;
   legacyServiceId: ConnectedServiceId | null;
@@ -64,25 +104,14 @@ export function updateQualifiedConnectedAccountLabel(params: Readonly<{
   label: string | null;
   labelsByKey: Readonly<Record<string, string | undefined>>;
 }>): Record<string, string> {
-  const next = copyDefinedStringRecord(params.labelsByKey);
-  for (const serviceKey of qualifiedConnectedAccountPreferenceServiceKeys(params)) {
-    delete next[connectedServiceProfileKey({
-      serviceId: serviceKey,
-      profileId: params.accountId,
-    })];
-    delete next[connectedServiceProfileLegacyKey({
-      serviceId: serviceKey,
-      profileId: params.accountId,
-    })];
-  }
   const label = params.label?.trim() ?? '';
-  if (label) {
-    next[connectedServiceProfileKey({
-      serviceId: qualifiedConnectedAccountPreferenceServiceKey(params.service),
-      profileId: params.accountId,
-    })] = label;
-  }
-  return next;
+  return updateQualifiedConnectedAccountProfilePreference({
+    service: params.service,
+    legacyServiceId: params.legacyServiceId,
+    accountId: params.accountId,
+    valuesByKey: copyDefinedStringRecord(params.labelsByKey),
+    value: label || null,
+  });
 }
 
 export function updateQualifiedConnectedAccountDefaultId(params: Readonly<{
