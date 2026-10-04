@@ -14,7 +14,7 @@ export type DaemonServiceTargetMode = 'pinned' | 'default-following';
  * Whether the installed background service starts itself at login.
  *
  * - `at-login` (default, unchanged behaviour): launchd `RunAtLoad`, a systemd
- *   `enable`d unit, a Windows `ONLOGON` trigger.
+ *   `enable`d unit, a Windows current-user logon trigger.
  * - `on-demand`: the service stays installed and startable, but nothing starts
  *   it at login — the daemon runs only while something asks for it (the desktop
  *   app, or `happier service start`).
@@ -465,9 +465,8 @@ export function planDaemonServiceInstall(params: Readonly<{
       definitionPath: wrapperPath,
       definitionContents: wrapper,
       taskName,
-      // `persistent: false` is cli-common's existing expression of "registered
-      // without a logon trigger": it creates the task with `/SC ONCE` instead
-      // of `/SC ONLOGON`, and the install still runs it once now.
+      // cli-common registers the current user's interactive task, with a scoped logon
+      // trigger only at login. On-demand has no trigger; install still runs it now.
       persistent: autostart === 'at-login',
     });
 
