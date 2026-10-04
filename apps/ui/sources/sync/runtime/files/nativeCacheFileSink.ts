@@ -1,3 +1,5 @@
+import { randomUUID } from '@/platform/randomUUID';
+
 type ExpoFileHandleLike = {
     offset?: number | null;
     writeBytes: (bytes: Uint8Array) => void;
@@ -39,9 +41,13 @@ function sanitizeCacheFileName(name: string): string {
     const trimmed = String(name ?? '').trim();
     const safe = trimmed
         .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_')
-        .replace(/^\.+/g, '_')
-        .slice(0, 160);
-    return safe || 'preview';
+        .replace(/^\.+/g, '_');
+    const extensionIndex = safe.lastIndexOf('.');
+    const extension = extensionIndex > 0 ? safe.slice(extensionIndex) : '';
+    if (safe.length > 160 && extension && extension.length < 160) {
+        return `${safe.slice(0, 160 - extension.length)}${extension}`;
+    }
+    return safe.slice(0, 160) || 'preview';
 }
 
 export async function createNativeCacheFileSink(input: Readonly<{
@@ -64,19 +70,18 @@ export async function createNativeCacheFileSink(input: Readonly<{
         );
         await cacheSubdir.create({ idempotent: true, intermediates: true });
 
-        const file = new FileSystem.File(cacheSubdir, sanitizeCacheFileName(input.name));
+        const file = new FileSystem.File(cacheSubdir, `${randomUUID()}-${sanitizeCacheFileName(input.name)}`);
         file.create();
         const handle = file.open();
         if (typeof handle.offset === 'number' || handle.offset === null) {
             handle.offset = 0;
         }
 
+        let closed = false;
         const close = async () => {
-            try {
-                handle.close();
-            } catch {
-                // Best-effort close.
-            }
+            if (closed) return;
+            handle.close();
+            closed = true;
         };
 
         const cleanup = async () => {

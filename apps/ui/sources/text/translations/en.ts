@@ -6812,6 +6812,8 @@ export const en = {
 	                        copyPath: 'Copy path',
 	                        download: 'Download',
 	                        downloadAsZip: 'Download as zip',
+	                        openWith: 'Open with',
+	                        share: 'Share',
 	                    },
 	                    dropToUpload: 'Drop files to upload',
 	                    rename: {
@@ -7122,6 +7124,7 @@ export const en = {
             },
             loadingFile: ({ fileName }: { fileName: string }) => `Loading ${fileName}...`,
             binaryFile: 'Binary File',
+            videoPreview: 'Video preview',
             imagePreviewTooLarge: 'Image preview is too large to display',
             sessionMedia: {
                 generatedImageA11y: ({ name }: { name: string }) => `Open generated image ${name}`,

@@ -7212,6 +7212,8 @@ export const ru: TranslationStructure = {
 	        copyPath: "Копировать путь",
 	        download: "Скачать",
 	        downloadAsZip: "Скачать как ZIP",
+	        openWith: 'Открыть с помощью',
+	        share: 'Поделиться',
 	      },
 	      dropToUpload: "Перетащите файлы для загрузки",
 	      rename: {
@@ -7551,6 +7553,7 @@ export const ru: TranslationStructure = {
       loadingFile: ({ fileName }: { fileName: string }) =>
         `Загрузка ${fileName}...`,
         binaryFile: "Бинарный файл",
+        videoPreview: 'Предпросмотр видео',
         imagePreviewTooLarge: "Предпросмотр изображения слишком большой для отображения",
         sessionMedia: {
           generatedImageA11y: ({ name }: { name: string }) => `Открыть сгенерированное изображение ${name}`,

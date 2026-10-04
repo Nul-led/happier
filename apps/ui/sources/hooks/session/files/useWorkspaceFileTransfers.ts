@@ -40,7 +40,10 @@ export type WorkspaceDownloadState =
     | Readonly<{ status: 'canceled' }>
     | Readonly<{ status: 'error'; error: string }>;
 
-type TransferResult = { ok: true } | { ok: false; error: string };
+type TransferResult = { ok: true } | { ok: false; error: string; canceled?: boolean };
+export type WorkspaceFileTransferResult = TransferResult;
+export type WorkspaceFileDownloadAction = 'save' | 'open' | 'share';
+type WorkspaceFileDownloadInput = Readonly<{ path: string; asZip: boolean; action?: WorkspaceFileDownloadAction }>;
 
 function parseOptionalPositiveInt(value: unknown): number | undefined {
     const raw = String(value ?? '').trim();
@@ -226,7 +229,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
     downloadState: WorkspaceDownloadState;
     startUploads: (input: Readonly<{ entries: readonly WorkspaceUploadEntry[]; destinationDir: string }>) => Promise<TransferResult>;
     cancelUploads: () => void;
-    startDownload: (input: Readonly<{ path: string; asZip: boolean }>) => Promise<TransferResult>;
+    startDownload: (input: WorkspaceFileDownloadInput) => Promise<TransferResult>;
     cancelDownload: () => void;
 }> {
     const {
@@ -363,7 +366,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
         }
     }, [maxConcurrentUploads, onAfterUploadSuccess, onResolveUploadConflicts, sessionId]);
 
-    const startDownload = React.useCallback(async (input: Readonly<{ path: string; asZip: boolean }>): Promise<TransferResult> => {
+    const startDownload = React.useCallback(async (input: WorkspaceFileDownloadInput): Promise<TransferResult> => {
         if (downloadAbortRef.current) {
             return { ok: false, error: 'Download already in progress' };
         }
@@ -372,6 +375,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
         downloadAbortRef.current = controller;
 
         const nativeSinkRef: { current: NativeCacheFileSink | null } = { current: null };
+        let keepNativeSink = false;
         const downloadedChunks: Uint8Array[] = [];
         let webBufferedBytes = 0;
         let webExceededLimit = false;
@@ -385,7 +389,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
         try {
             const res = await downloadDaemonSessionFileToDestination({
                 sessionId,
-                request: input,
+                request: { path: input.path, asZip: input.asZip },
                 destination: {
                     writeBytes: async (bytes) => {
                         if (Platform.OS === 'web') {
@@ -494,16 +498,28 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                     }, 1_000);
                 }
             } else if (nativeSinkRef.current) {
-                try {
-                    const Sharing: any = await import('expo-sharing');
-                    if (Sharing && typeof Sharing.isAvailableAsync === 'function') {
-                        const available = await Sharing.isAvailableAsync();
-                        if (available && typeof Sharing.shareAsync === 'function') {
-                            await Sharing.shareAsync(nativeSinkRef.current.fileUri);
-                        }
+                if (controller.signal.aborted) {
+                    setDownloadState({ status: 'canceled' });
+                    return { ok: false, error: 'Download canceled', canceled: true };
+                }
+                if (Platform.OS === 'android') {
+                    const { performAndroidFileAction } = await import('@/sync/runtime/files/nativeFileActions');
+                    const action = input.action ?? 'save';
+                    const result = await performAndroidFileAction({
+                        fileUri: nativeSinkRef.current.fileUri,
+                        name: res.name || 'download',
+                        action,
+                    });
+                    if (result.canceled) {
+                        setDownloadState({ status: 'canceled' });
+                        return { ok: false, error: 'Download canceled', canceled: true };
                     }
-                } catch {
-                    // Best-effort share only.
+                    keepNativeSink = action !== 'save';
+                } else {
+                    const Sharing = await import('expo-sharing');
+                    if (!await Sharing.isAvailableAsync()) throw new Error('File sharing is unavailable');
+                    await Sharing.shareAsync(nativeSinkRef.current.fileUri);
+                    keepNativeSink = true;
                 }
             } else {
                 setDownloadState({ status: 'error', error: 'Download sink unavailable' });
@@ -522,7 +538,12 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                 ? { status: 'done', name: prev.name, totalBytes: prev.totalBytes }
                 : prev);
             return { ok: true };
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to download file';
+            setDownloadState(controller.signal.aborted ? { status: 'canceled' } : { status: 'error', error: message });
+            return { ok: false, error: message, ...(controller.signal.aborted ? { canceled: true } : {}) };
         } finally {
+            if (nativeSinkRef.current && !keepNativeSink) await nativeSinkRef.current.cleanup();
             if (Platform.OS === 'web') {
                 webBufferedBytes = 0;
                 downloadedChunks.length = 0;

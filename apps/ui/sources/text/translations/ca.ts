@@ -6780,6 +6780,8 @@ deps: {
 	                    copyPath: 'Copia el camí',
 	                    download: 'Descarrega',
 	                    downloadAsZip: 'Descarrega com a ZIP',
+	                    openWith: 'Obre amb',
+	                    share: 'Comparteix',
 	                },
 	                dropToUpload: 'Deixa anar fitxers per pujar',
 	                rename: {
@@ -7092,6 +7094,7 @@ deps: {
             },
             loadingFile: ({ fileName }: { fileName: string }) => `Carregant ${fileName}...`,
             binaryFile: 'Fitxer binari',
+            videoPreview: 'Previsualització de vídeo',
             imagePreviewTooLarge: "La previsualització de la imatge és massa gran per mostrar-la",
             sessionMedia: {
                 generatedImageA11y: ({ name }: { name: string }) => `Obre la imatge generada ${name}`,

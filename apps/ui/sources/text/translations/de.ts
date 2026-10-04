@@ -6782,6 +6782,8 @@ export const de: TranslationStructure = {
 	                        copyPath: 'Pfad kopieren',
 	                        download: 'Herunterladen',
 	                        downloadAsZip: 'Als ZIP herunterladen',
+	                        openWith: 'Öffnen mit',
+	                        share: 'Teilen',
 	                    },
 	                    dropToUpload: 'Dateien zum Hochladen hierher ziehen',
 	                    rename: {
@@ -7092,6 +7094,7 @@ export const de: TranslationStructure = {
             },
             loadingFile: ({ fileName }: { fileName: string }) => `Lädt ${fileName}...`,
             binaryFile: 'Binärdatei',
+            videoPreview: 'Videovorschau',
             imagePreviewTooLarge: 'Die Bildvorschau ist zu groß zum Anzeigen',
             sessionMedia: {
                 generatedImageA11y: ({ name }: { name: string }) => `Erzeugtes Bild öffnen: ${name}`,
