@@ -543,9 +543,11 @@ the only difference from the installed unit, the plan applies the login trigger
 daemon the user is working through. macOS and Windows have no equivalent — their trigger lives in
 the definition (`RunAtLoad`) or in the registered task, so applying it re-bootstraps
 (`launchctl bootout` → `bootstrap` → `kickstart -k`) or re-creates and re-runs the task, which
-restarts the daemon. On Windows an `on-demand` task is registered as `schtasks /SC ONCE` with an
-explicitly past `/SD` boundary (schtasks has no manual-only schedule) and **without**
-`-StartWhenAvailable`, so Task Scheduler can neither reach the trigger nor catch it up as a missed
+restarts the daemon. In current development source, Windows user tasks are registered through
+the shared service planner with the invoking user's SID, `InteractiveToken` and `LeastPrivilege`.
+At-login uses a `LogonTrigger` scoped to that SID, so registration does not request an all-users
+logon trigger or a password. On-demand registers no trigger and omits
+`-StartWhenAvailable`, so Task Scheduler can neither schedule a start nor catch it up as a missed
 start; `schtasks /Run` — the CLI's `service start` — remains the only thing that starts it. On macOS
 an `on-demand` LaunchAgent also carries **no** `KeepAlive`:
 launchd.plist(5) documents `SuccessfulExit` as implying `RunAtLoad`, so keeping it would re-arm the
