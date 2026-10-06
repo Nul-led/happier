@@ -11,6 +11,7 @@ const native = vi.hoisted(() => ({
     closeError: null as Error | null,
     deleteError: null as Error | null,
     rpc: vi.fn(),
+    iosShare: vi.fn(), iosAvailable: vi.fn(),
 }));
 
 installSessionFilesHookCommonModuleMocks({
@@ -29,7 +30,7 @@ vi.mock('expo-modules-core', async (importOriginal) => ({
     ...await importOriginal<object>(),
     requireOptionalNativeModule: (name: string) => name === 'HappierFileActions' ? native : null,
 }));
-vi.mock('expo-sharing', () => ({ isAvailableAsync: async () => true, shareAsync: vi.fn() }));
+vi.mock('expo-sharing', () => ({ isAvailableAsync: native.iosAvailable, shareAsync: native.iosShare }));
 vi.mock('expo-file-system', () => ({
     Paths: { cache: 'file:///cache' },
     Directory: class {
@@ -62,7 +63,12 @@ vi.mock('expo-file-system', () => ({
 
 import type { useWorkspaceFileTransfers } from './useWorkspaceFileTransfers';
 
-describe('Android workspace downloads through the canonical transfer pipeline', () => {
+async function setPlatform(os: 'android' | 'ios') {
+    const { Platform } = await import('react-native');
+    Object.defineProperty(Platform, 'OS', { configurable: true, value: os });
+}
+
+describe('native workspace downloads through the canonical transfer pipeline', () => {
     afterEach(() => vi.useRealTimers());
     beforeEach(async () => {
         const { storage } = await import('@/sync/domains/state/storage');
@@ -70,6 +76,9 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
             sessions: { 'session-1': createSessionFixture({ id: 'session-1', active: true, metadata: { machineId: 'machine-1', path: '/workspace', host: 'test-machine' } }) },
             machines: { 'machine-1': createMachineFixture({ id: 'machine-1', active: true }) },
         });
+        await setPlatform('android');
+        native.iosShare.mockReset().mockResolvedValue(undefined);
+        native.iosAvailable.mockReset().mockResolvedValue(true);
         native.files.clear();
         native.closeError = null;
         native.deleteError = null;
@@ -174,7 +183,7 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
         let download: ReturnType<ReturnType<typeof useWorkspaceFileTransfers>['startDownload']> | undefined;
         await act(async () => {
             download = api().startDownload({ path: 'recording.mp4', asZip: false, action });
-            await actionEntered;
+            await Promise.race([actionEntered, download.then(result => { throw new Error(`Transfer settled before native handoff: ${JSON.stringify(result)}`); })]);
         });
         const handoffState = api().downloadState;
         await act(async () => {
@@ -186,6 +195,61 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
         expect(api().downloadState.status).toBe('done');
         if (action === 'save') expect(native.files.size).toBe(0);
         else expect(native.files.get(nativeAction.mock.calls[0]?.[0])).toEqual([1, 2, 3, 4]);
+    });
+
+    it.each(['success', 'failure'] as const)('reports the iOS share %s result after app cancellation during handoff', async outcome => {
+        await setPlatform('ios');
+        const api = await mount();
+        let entered!: () => void;
+        const actionEntered = new Promise<void>(resolve => { entered = resolve; });
+        let complete!: () => void;
+        native.iosShare.mockImplementationOnce(async () => {
+            entered();
+            await new Promise<void>(resolve => { complete = resolve; });
+            if (outcome === 'failure') throw new Error('Share sheet failed');
+        });
+        let download: ReturnType<ReturnType<typeof useWorkspaceFileTransfers>['startDownload']> | undefined;
+        await act(async () => {
+            download = api().startDownload({ path: 'recording.mp4', asZip: false });
+            await Promise.race([actionEntered, download.then(result => { throw new Error(`Transfer settled before native handoff: ${JSON.stringify(result)}`); })]);
+        });
+        const handoffState = api().downloadState;
+        const uri = native.iosShare.mock.calls[0]?.[0];
+        expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
+        await act(async () => {
+            api().cancelDownload();
+            complete();
+            expect(await download).toEqual(outcome === 'success' ? { ok: true } : { ok: false, error: 'Share sheet failed' });
+        });
+        expect(handoffState).toMatchObject({ status: 'downloading', cancelable: false });
+        expect(api().downloadState.status).toBe(outcome === 'success' ? 'done' : 'error');
+        if (outcome === 'success') expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
+        else expect(native.files.size).toBe(0);
+    });
+
+    it('cancels before iOS handoff while sharing availability is pending', async () => {
+        await setPlatform('ios');
+        const api = await mount();
+        let entered!: () => void;
+        const availabilityEntered = new Promise<void>(resolve => { entered = resolve; });
+        let complete!: () => void;
+        native.iosAvailable.mockImplementationOnce(async () => {
+            entered();
+            await new Promise<void>(resolve => { complete = resolve; });
+            return true;
+        });
+        let download: ReturnType<ReturnType<typeof useWorkspaceFileTransfers>['startDownload']> | undefined;
+        await act(async () => {
+            download = api().startDownload({ path: 'recording.mp4', asZip: false });
+            await Promise.race([availabilityEntered, download.then(result => { throw new Error(`Transfer settled before sharing availability: ${JSON.stringify(result)}`); })]);
+        });
+        await act(async () => {
+            api().cancelDownload();
+            complete();
+            expect(await download).toMatchObject({ ok: false, canceled: true });
+        });
+        expect(native.iosShare).not.toHaveBeenCalled();
+        expect(native.files.size).toBe(0);
     });
 
     it('offers explicit Android save, open and share intents from the download control', async () => {

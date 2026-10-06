@@ -356,6 +356,17 @@ export function useWorkspaceFileTransfers(params: Readonly<{
         const controller = new AbortController();
         const operation = { controller, cancelable: true };
         downloadOperationRef.current = operation;
+        const beginNativeHandoff = () => {
+            if (controller.signal.aborted) {
+                setDownloadState({ status: 'canceled' });
+                return false;
+            }
+            // The OS owns the action after handoff; app cancellation cannot
+            // stop its copy, dismiss its share sheet, or retract a granted URI.
+            operation.cancelable = false;
+            setDownloadState(prev => prev.status === 'downloading' ? { ...prev, cancelable: false } : prev);
+            return true;
+        };
 
         const nativeSinkRef: { current: NativeCacheFileSink | null } = { current: null };
         let keepNativeSink = false;
@@ -489,14 +500,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                 }
                 if (Platform.OS === 'android') {
                     const { performAndroidFileAction } = await import('@/sync/runtime/files/nativeFileActions');
-                    if (controller.signal.aborted) {
-                        setDownloadState({ status: 'canceled' });
-                        return { ok: false, error: 'Download canceled', canceled: true };
-                    }
-                    // The OS owns cancellation after handoff; JS cannot stop a
-                    // document copy or retract a successfully granted URI.
-                    operation.cancelable = false;
-                    setDownloadState(prev => prev.status === 'downloading' ? { ...prev, cancelable: false } : prev);
+                    if (!beginNativeHandoff()) return { ok: false, error: 'Download canceled', canceled: true };
                     const action = input.action ?? 'save';
                     const result = await performAndroidFileAction({
                         fileUri: nativeSinkRef.current.fileUri,
@@ -511,6 +515,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                 } else {
                     const Sharing = await import('expo-sharing');
                     if (!await Sharing.isAvailableAsync()) throw new Error(t('files.fileSharingUnavailable'));
+                    if (!beginNativeHandoff()) return { ok: false, error: 'Download canceled', canceled: true };
                     await Sharing.shareAsync(nativeSinkRef.current.fileUri);
                     keepNativeSink = true;
                 }
