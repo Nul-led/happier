@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSessionFixture, createMachineFixture, renderScreen } from '@/dev/testkit';
+import { createSessionFixture, createMachineFixture, createDeferred, renderScreen } from '@/dev/testkit';
 import { installSessionFilesHookCommonModuleMocks } from './sessionFilesHookTestHelpers';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -123,6 +123,36 @@ describe('native workspace downloads through the canonical transfer pipeline', (
         expect(native.files.size).toBe(0);
         expect(native.openFile).not.toHaveBeenCalled();
         expect(native.shareFile).not.toHaveBeenCalled();
+    });
+
+    it.each([true, false])('marks only app-canceled transport failures as canceled (aborted=%s)', async aborted => {
+        const api = await mount();
+        const entered = createDeferred<void>();
+        const release = createDeferred<void>();
+        const rpc = native.rpc.getMockImplementation();
+        if (!rpc) throw new Error('Expected RPC boundary implementation');
+        // Defer the genuine daemon init response; the transfer and cancellation owners stay real.
+        native.rpc.mockImplementation(async (machine: string, method: string) => {
+            if (method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_INIT) {
+                entered.resolve();
+                await release.promise;
+                if (!aborted) return { success: false, error: 'Download canceled' };
+            }
+            return await rpc(machine, method);
+        });
+        let download: ReturnType<ReturnType<typeof useWorkspaceFileTransfers>['startDownload']> | undefined;
+        await act(async () => {
+            download = api().startDownload({ path: 'recording.mp4', asZip: false });
+            await Promise.race([entered.promise, download.then(result => { throw new Error(`Transfer settled before init: ${JSON.stringify(result)}`); })]);
+        });
+        await act(async () => {
+            if (aborted) api().cancelDownload();
+            release.resolve();
+            expect(await download).toEqual({ ok: false, error: 'Download canceled', ...(aborted ? { canceled: true } : {}) });
+        });
+        expect(api().downloadState).toEqual(aborted ? { status: 'canceled' } : { status: 'error', error: 'Download canceled' });
+        expect(native.files.size).toBe(0);
+        expect(native.saveFile).not.toHaveBeenCalled();
     });
 
     it('reports picker cancellation and removes the temporary transfer file', async () => {

@@ -476,8 +476,9 @@ export function useWorkspaceFileTransfers(params: Readonly<{
 
                 if (!res.ok) {
                     failureMessage = res.error;
-                    setDownloadState(controller.signal.aborted ? { status: 'canceled' } : { status: 'error', error: res.error });
-                    return { ok: false, error: res.error };
+                    const canceled = controller.signal.aborted && operation.cancelable;
+                    setDownloadState(canceled ? { status: 'canceled' } : { status: 'error', error: res.error });
+                    return { ok: false, error: res.error, ...(canceled ? { canceled: true } : {}) };
                 }
 
                 if (Platform.OS === 'web') {
