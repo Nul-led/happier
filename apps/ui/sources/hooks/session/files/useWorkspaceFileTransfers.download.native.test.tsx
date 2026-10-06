@@ -160,6 +160,26 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
         expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
     });
 
+    it('keeps an open-with grant readable when download is canceled during handoff', async () => {
+        const api = await mount();
+        let entered!: () => void;
+        const actionEntered = new Promise<void>(resolve => { entered = resolve; });
+        let complete!: () => void;
+        native.openFile.mockImplementationOnce(async () => {
+            entered();
+            await new Promise<void>(resolve => { complete = resolve; });
+        });
+        await act(async () => {
+            const download = api().startDownload({ path: 'recording.mp4', asZip: false, action: 'open' });
+            await actionEntered;
+            api().cancelDownload();
+            complete();
+            expect(await download).toMatchObject({ ok: false });
+        });
+        const uri = native.openFile.mock.calls[0]?.[0];
+        expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
+    });
+
     it('offers explicit Android save, open and share intents from the download control', async () => {
         const { FileDownloadButton } = await import('@/components/sessions/files/file/FileDownloadButton');
         const { DropdownMenu } = await import('@/components/ui/forms/dropdown/DropdownMenu');

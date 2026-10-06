@@ -529,7 +529,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
             }
 
             if (controller.signal.aborted) {
-                if (nativeSinkRef.current) {
+                if (nativeSinkRef.current && !keepNativeSink) {
                     await nativeSinkRef.current.cleanup();
                 }
                 setDownloadState({ status: 'canceled' });
