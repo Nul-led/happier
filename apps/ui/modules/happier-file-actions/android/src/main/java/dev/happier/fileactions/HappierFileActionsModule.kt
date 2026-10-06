@@ -3,16 +3,13 @@ package dev.happier.fileactions
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import expo.modules.kotlin.activityresult.AppContextActivityResultContract
 import expo.modules.kotlin.activityresult.AppContextActivityResultLauncher
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.withContext
 import java.io.Serializable
 
 internal data class SaveDocumentOptions(val name: String, val mimeType: String) : Serializable
@@ -47,14 +44,7 @@ class HappierFileActionsModule : Module() {
         if (selectedUri == null) {
           mapOf("canceled" to true)
         } else {
-          withContext(Dispatchers.IO) {
-            val uri = Uri.parse(selectedUri)
-            require(uri.scheme == "content") { "Save destination must be a document" }
-            context.contentResolver.openOutputStream(uri, "wt").use { output ->
-              requireNotNull(output) { "Unable to write the selected destination" }
-              file.inputStream().use { input -> input.copyTo(output) }
-            }
-          }
+          AndroidFileActions.copyToDocument(context, file, selectedUri)
           mapOf("canceled" to false, "uri" to selectedUri)
         }
       } finally {

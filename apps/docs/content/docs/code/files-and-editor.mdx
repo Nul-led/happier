@@ -101,6 +101,10 @@ file to another app. Downloads from the file tree use the same save picker.
 Opening or sharing a file uses a temporary cached copy; use **Save as…** when
 you want to keep a file in a location you can find later.
 
+If a save fails after you choose a destination, Happier tries to remove the
+incomplete document. If the document provider refuses deletion, the error
+identifies the remaining document so you can remove it yourself.
+
 <Callout type="info">
   In the current development build (unreleased), **Project** view hides Git-ignored
   files and repository metadata while keeping tracked files, changed files, and
@@ -215,7 +219,8 @@ Uploads and downloads run as managed transfers instead of fire-and-forget action
 Platform notes:
 
 - **Web**: downloads use the browser download flow.
-- **iOS / Android**: downloads are written to a temporary local file and then passed to the system share/open flow.
+- **iOS**: downloads are written to a temporary local file and then passed to the system share flow.
+- **Android**: in the current development build (unreleased), downloads from the file tree open **Save as…**. The file view also offers **Open with…** and **Share…** using a temporary cached copy.
 
 ### Rename, delete, and download
 
