@@ -223,8 +223,7 @@ describe('native workspace downloads through the canonical transfer pipeline', (
         });
         expect(handoffState).toMatchObject({ status: 'downloading', cancelable: false });
         expect(api().downloadState.status).toBe(outcome === 'success' ? 'done' : 'error');
-        if (outcome === 'success') expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
-        else expect(native.files.size).toBe(0);
+        expect(native.files.size).toBe(0);
     });
 
     it('cancels before iOS handoff while sharing availability is pending', async () => {

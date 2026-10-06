@@ -517,7 +517,6 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                     if (!await Sharing.isAvailableAsync()) throw new Error(t('files.fileSharingUnavailable'));
                     if (!beginNativeHandoff()) return { ok: false, error: 'Download canceled', canceled: true };
                     await Sharing.shareAsync(nativeSinkRef.current.fileUri);
-                    keepNativeSink = true;
                 }
             } else {
                 setDownloadState({ status: 'error', error: 'Download sink unavailable' });
