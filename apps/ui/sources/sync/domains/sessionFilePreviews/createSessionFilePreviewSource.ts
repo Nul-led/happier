@@ -5,6 +5,7 @@ import {
     type BulkTransferFileDestination,
 } from '@/sync/domains/transfers/runtime/bulkTransferPipeline';
 import { createNativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
+import { resolveWebFileBufferMaxBytes } from '@/sync/runtime/files/webFileBufferBudget';
 
 const PREVIEW_CACHE_DIRECTORY_NAME = 'happier-previews';
 const PREVIEW_SIZE_LIMIT_ERROR = 'File exceeds preview size limit';
@@ -166,7 +167,10 @@ export async function createSessionFilePreviewSource(input: Readonly<{
     signal?: AbortSignal | null;
     createDestination?: CreateSessionFilePreviewDestination;
 }>): Promise<CreateSessionFilePreviewSourceResult> {
-    const maxBytes = normalizeMaxBytes(input.maxBytes);
+    const requestedMaxBytes = normalizeMaxBytes(input.maxBytes);
+    const maxBytes = Platform.OS === 'web'
+        ? Math.min(requestedMaxBytes ?? Infinity, resolveWebFileBufferMaxBytes())
+        : requestedMaxBytes;
     const destinationResult = await (input.createDestination ?? createDefaultSessionFilePreviewDestination)({
         filePath: input.filePath,
         mimeType: input.mimeType,

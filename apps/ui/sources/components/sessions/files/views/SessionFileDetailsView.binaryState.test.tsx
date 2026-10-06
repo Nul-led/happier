@@ -7,30 +7,10 @@ import type { Project } from '@/sync/runtime/orchestration/projectManager';
 import { installSessionFilesViewCommonModuleMocks } from './sessionFilesViewsTestHelpers';
 import { FileBinaryState } from '@/components/sessions/files/file/FileScreenState';
 
-const video = vi.hoisted(() => ({
-    modifiedMs: 1,
-    download: vi.fn(),
-    revoke: vi.fn(),
-    sourceCounter: 0,
-}));
-vi.mock('@/sync/ops', () => ({
-    sessionStatFile: async () => ({ success: true, exists: true, kind: 'file', sizeBytes: 12_000_000, modifiedMs: video.modifiedMs }),
-    sessionReadFile: vi.fn(),
-    sessionScmDiffFile: vi.fn(),
-}));
-vi.mock('@/sync/domains/transfers/runtime/bulkTransferPipeline', () => ({ downloadDaemonSessionFileToDestination: video.download }));
 vi.mock('@react-navigation/native', async () => {
     const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
     return createReactNavigationNativeMock();
 });
-vi.mock('expo-video', () => ({
-    VideoView: 'VideoView',
-    useVideoPlayer: (source: string) => React.useMemo(() => ({
-        source, status: 'readyToPlay', currentTime: 0, pause: vi.fn(),
-        addListener: () => ({ remove: vi.fn() }),
-    }), [source]),
-}));
-
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 (globalThis as any).__DEV__ = false;
 
@@ -267,11 +247,7 @@ vi.mock('@/components/sessions/files/useSessionFileDownloadAvailability', () => 
 beforeEach(() => {
   downloadAvailabilityState.value = true;
   binarySnapshot = { ...binarySnapshot, fetchedAt: 1, entries: [binaryEntry] };
-  video.modifiedMs = 1;
-  video.sourceCounter = 0;
-  video.revoke.mockClear();
-  video.download.mockReset().mockResolvedValue({ ok: true, name: 'demo.mp4', sizeBytes: 12_000_000 });
-  vi.stubGlobal('URL', { createObjectURL: () => `blob:video-${++video.sourceCounter}`, revokeObjectURL: video.revoke });
+
 });
 
 describe('SessionFileDetailsView (binary)', () => {
@@ -310,28 +286,4 @@ describe('SessionFileDetailsView (binary)', () => {
     expect(startDownloadSpy).toHaveBeenCalledWith({ path: 'bin.zip', asZip: false });
   });
 
-  it('preserves a playing MP4 across unrelated SCM updates and reloads when that same-size file changes', async () => {
-    await import('@/components/sessions/files/content/FileVideoPreview');
-    const { SessionFileDetailsView } = await import('./SessionFileDetailsView');
-    const screen = await renderScreen(<SessionFileDetailsView sessionId="s1" scopeId="session:s1" filePath="demo.mp4" />);
-    await vi.waitFor(() => expect(screen.findAllByType('VideoView')).toHaveLength(1));
-    const player = screen.findAllByType('VideoView')[0].props.player;
-    player.currentTime = 15;
-    const firstContent = screen.findByType(FileBinaryState).props;
-    binarySnapshot = { ...binarySnapshot, fetchedAt: 2, entries: [binaryEntry, { ...binaryEntry, path: 'other.txt' }] };
-    await screen.update(<SessionFileDetailsView sessionId="s1" scopeId="session:s1" filePath="demo.mp4" />);
-    expect(screen.findAllByType('VideoView')[0].props.player).toBe(player);
-    expect(player.currentTime).toBe(15);
-    expect(video.download).toHaveBeenCalledTimes(1);
-    expect(video.revoke).not.toHaveBeenCalled();
-    expect(screen.findByType(FileBinaryState).props.videoPreviewRevision).toBe(firstContent.videoPreviewRevision);
-
-    video.modifiedMs = 2;
-    binarySnapshot = { ...binarySnapshot, fetchedAt: 3 };
-    await screen.update(<SessionFileDetailsView sessionId="s1" scopeId="session:s1" filePath="demo.mp4" />);
-    await vi.waitFor(() => expect(video.download).toHaveBeenCalledTimes(2));
-    expect(screen.findAllByType('VideoView')[0].props.player).not.toBe(player);
-    expect(player.pause).toHaveBeenCalled();
-    expect(video.revoke).toHaveBeenCalledWith('blob:video-1');
-  });
 });

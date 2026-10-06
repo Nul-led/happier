@@ -142,6 +142,13 @@ export async function refreshSessionFileDetails(input: Readonly<{
                 let binaryPreviewRevision: string | null = null;
                 if (statLimitBytes != null || videoMime) {
                     const stat = await sessionStatFile(input.sessionId, input.filePath);
+                    // A failed metadata refresh must not publish a permanently reusable null video revision.
+                    // The loading owner retains the last good preview and exposes the ordinary retry error.
+                    if (videoMime && (!stat.success || !stat.exists
+                        || typeof stat.sizeBytes !== 'number' || !Number.isFinite(stat.sizeBytes) || stat.sizeBytes < 0
+                        || typeof stat.modifiedMs !== 'number' || !Number.isFinite(stat.modifiedMs))) {
+                        throw new Error(!stat.success ? stat.error : t('files.fileReadFailed'));
+                    }
                     if (stat.success && stat.exists === true && typeof stat.sizeBytes === 'number') {
                         statSizeBytes = Math.max(0, Math.floor(stat.sizeBytes));
                         binaryPreviewRevision = JSON.stringify([statSizeBytes, stat.modifiedMs ?? null]);

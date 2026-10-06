@@ -160,24 +160,32 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
         expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
     });
 
-    it('keeps an open-with grant readable when download is canceled during handoff', async () => {
+    it.each(['save', 'open', 'share'] as const)('reports the completed native %s result after app cancellation during handoff', async action => {
         const api = await mount();
         let entered!: () => void;
         const actionEntered = new Promise<void>(resolve => { entered = resolve; });
         let complete!: () => void;
-        native.openFile.mockImplementationOnce(async () => {
+        const nativeAction = action === 'save' ? native.saveFile : action === 'open' ? native.openFile : native.shareFile;
+        nativeAction.mockImplementationOnce(async () => {
             entered();
             await new Promise<void>(resolve => { complete = resolve; });
+            return { canceled: false };
         });
+        let download: ReturnType<ReturnType<typeof useWorkspaceFileTransfers>['startDownload']> | undefined;
         await act(async () => {
-            const download = api().startDownload({ path: 'recording.mp4', asZip: false, action: 'open' });
+            download = api().startDownload({ path: 'recording.mp4', asZip: false, action });
             await actionEntered;
+        });
+        const handoffState = api().downloadState;
+        await act(async () => {
             api().cancelDownload();
             complete();
-            expect(await download).toEqual({ ok: false, error: 'Download canceled', canceled: true });
+            expect(await download).toEqual({ ok: true });
         });
-        const uri = native.openFile.mock.calls[0]?.[0];
-        expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
+        expect(handoffState).toMatchObject({ status: 'downloading', cancelable: false });
+        expect(api().downloadState.status).toBe('done');
+        if (action === 'save') expect(native.files.size).toBe(0);
+        else expect(native.files.get(nativeAction.mock.calls[0]?.[0])).toEqual([1, 2, 3, 4]);
     });
 
     it('offers explicit Android save, open and share intents from the download control', async () => {

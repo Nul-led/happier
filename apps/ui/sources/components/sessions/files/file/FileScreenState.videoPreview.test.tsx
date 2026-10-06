@@ -1,14 +1,17 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSessionFixture, createMachineFixture, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture, createMachineFixture, renderScreen, standardCleanup, flushHookEffects } from '@/dev/testkit';
 import { FileBinaryState } from './FileScreenState';
-import { Platform } from 'react-native';
+import { Platform, Text } from 'react-native';
+import { useSessionFileDetailsLoading } from '../views/sessionFileDetails/useSessionFileDetailsLoading';
+import type { SessionStatFileResponse } from '@/sync/ops/sessionFileSystem/pathMetadataMutations';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { createEncryptedTransferChunkEnvelope } from '@/sync/domains/transfers/runtime/bulkTransferPipeline/transferChunkEncryption';
 
 const media = vi.hoisted(() => ({
     rpc: vi.fn(), readChunk: vi.fn(), cleanup: vi.fn(),
+    stat: { success: true, exists: true, kind: 'file', sizeBytes: 3, modifiedMs: 1 } as SessionStatFileResponse,
     focused: true,
     player: { pause: vi.fn(), status: 'loading', addListener: vi.fn(), staysActiveInBackground: true },
     statusListener: null as null | ((event: { status: string; error?: { message: string } }) => void),
@@ -30,9 +33,10 @@ vi.mock('@react-navigation/native', () => ({ useIsFocused: () => media.focused }
 vi.mock('@/sync/api/session/apiSocket', () => ({ apiSocket: { sessionRPC: media.rpc, machineRPC: media.rpc } }));
 vi.mock('expo-video', () => ({
     VideoView: 'VideoView',
-    useVideoPlayer: (_source: unknown, setup?: (player: typeof media.player) => void) => {
-        setup?.(media.player);
-        return media.player;
+    useVideoPlayer: (source: unknown, setup?: (player: typeof media.player) => void) => {
+        const player = React.useMemo(() => ({ ...media.player, currentTime: 0 }), [source]);
+        setup?.(player);
+        return player;
     },
 }));
 vi.mock('expo-file-system', () => ({
@@ -54,6 +58,21 @@ vi.mock('expo-file-system', () => ({
 const theme = { colors: { surface: { base: 'base', inset: 'inset' }, border: { default: 'border' }, text: { secondary: 'secondary' } } };
 const videoProps = { sessionId: 's1', videoMimeType: 'video/mp4', isActive: true };
 
+// Compose the real retained-details owner with the real preview and encrypted transfer pipeline.
+function RefreshedVideo({ snapshotSignature }: Readonly<{ snapshotSignature: string }>) {
+    const state = useSessionFileDetailsLoading({
+        sessionId: 's1', sessionPath: '/workspace', sessionsReady: true, filePath: 'demo.mp4',
+        diffMode: 'pending', includeDiff: false, includeFile: true, isActive: true,
+        snapshotSignature, refreshFingerprint: snapshotSignature,
+    });
+    return <>
+        {state.error ? <Text testID="video-metadata-error">{state.error}</Text> : null}
+        {state.fileContent ? <FileBinaryState theme={theme} filePath="demo.mp4" {...videoProps}
+            videoPreviewRevision={state.fileContent.binaryPreviewRevision} /> : null}
+    </>;
+}
+
+
 describe('session video file preview', () => {
     beforeEach(async () => {
         Object.defineProperty(Platform, 'OS', { value: 'web', configurable: true });
@@ -65,6 +84,7 @@ describe('session video file preview', () => {
             machines: { m1: createMachineFixture({ id: 'm1', active: true }) },
         });
         vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ features: { machines: { enabled: true, transfer: { enabled: true, serverRouted: { enabled: true } } } }, capabilities: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        media.stat = { success: true, exists: true, kind: 'file', sizeBytes: 3, modifiedMs: 1 };
         media.focused = true;
         media.statusListener = null;
         media.player.status = 'loading';
@@ -82,7 +102,7 @@ describe('session video file preview', () => {
             isLast: true,
         }));
         media.rpc.mockImplementation(async (_sessionId: string, method: string, payload: { recipientPublicKeyBase64?: string }) => {
-            if (method === RPC_METHODS.STAT_FILE) return { success: true, exists: true, kind: 'file', sizeBytes: 3 };
+            if (method === RPC_METHODS.STAT_FILE) return media.stat;
             if (method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_INIT) {
                 recipientPublicKeyBase64 = payload.recipientPublicKeyBase64 ?? '';
                 return { success: true, downloadId: 'video-download', name: 'demo.mp4', sizeBytes: 3, chunkSizeBytes: 3 };
@@ -91,11 +111,86 @@ describe('session video file preview', () => {
             if (method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_FINALIZE || method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_ABORT) return { success: true };
             throw new Error(`Unexpected RPC: ${method}`);
         });
-        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:video-preview');
+        let sourceCounter = 0;
+        vi.spyOn(URL, 'createObjectURL').mockImplementation(() => ++sourceCounter === 1 ? 'blob:video-preview' : `blob:video-preview-${sourceCounter}`);
         vi.spyOn(URL, 'revokeObjectURL').mockImplementation(media.cleanup);
         (await appState).emit('active');
     });
-    afterEach(() => { standardCleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+    afterEach(() => { standardCleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+    it.each(['video/mp4', 'image/png'])('rejects %s before reading encrypted chunks when the web buffering budget is exceeded', async mimeType => {
+        vi.stubEnv('EXPO_PUBLIC_HAPPIER_FILES_DOWNLOAD_MAX_BYTES', '2');
+        const { createSessionFilePreviewSource } = await import('@/sync/domains/sessionFilePreviews/createSessionFilePreviewSource');
+        const result = await createSessionFilePreviewSource({ sessionId: 's1', filePath: 'demo.mp4', mimeType, maxBytes: mimeType === 'video/mp4' ? null : 100 });
+        expect(result).toEqual({ ok: false, error: 'File exceeds preview size limit' });
+        expect(media.readChunk).not.toHaveBeenCalled();
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+    });
+
+    it('plays a web video exactly at the existing configured buffering budget', async () => {
+        vi.stubEnv('EXPO_PUBLIC_HAPPIER_FILES_DOWNLOAD_MAX_BYTES', '3');
+        const { createSessionFilePreviewSource } = await import('@/sync/domains/sessionFilePreviews/createSessionFilePreviewSource');
+        const result = await createSessionFilePreviewSource({ sessionId: 's1', filePath: 'demo.mp4', mimeType: 'video/mp4', maxBytes: null });
+        expect(result).toMatchObject({ ok: true, source: { uri: 'blob:video-preview', sizeBytes: 3 } });
+        expect(media.readChunk).toHaveBeenCalled();
+        if (result.ok) await result.source.cleanup();
+    });
+
+    it('keeps native file-backed video admission independent of the web buffering budget', async () => {
+        vi.stubEnv('EXPO_PUBLIC_HAPPIER_FILES_DOWNLOAD_MAX_BYTES', '2');
+        Object.defineProperty(Platform, 'OS', { value: 'android', configurable: true });
+        const { createSessionFilePreviewSource } = await import('@/sync/domains/sessionFilePreviews/createSessionFilePreviewSource');
+        const result = await createSessionFilePreviewSource({ sessionId: 's1', filePath: 'demo.mp4', mimeType: 'video/mp4', maxBytes: null });
+        expect(result).toMatchObject({ ok: true, source: { sizeBytes: 3 } });
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+        if (result.ok) await result.source.cleanup();
+    });
+
+    it('preserves playback across unrelated SCM refreshes and reloads a same-size changed file through encrypted chunks', async () => {
+        const screen = await renderScreen(<RefreshedVideo snapshotSignature="snapshot-1" />);
+        await vi.waitFor(() => expect(screen.findAllByType('VideoView')).toHaveLength(1));
+        const player = screen.findAllByType('VideoView')[0].props.player;
+        player.currentTime = 15;
+        await screen.update(<RefreshedVideo snapshotSignature="unrelated-snapshot-2" />);
+        expect(screen.findAllByType('VideoView')[0].props.player).toBe(player);
+        expect(player.currentTime).toBe(15);
+        expect(media.cleanup).not.toHaveBeenCalled();
+        media.stat = { success: true, exists: true, kind: 'file', sizeBytes: 3, modifiedMs: 2 };
+        await screen.update(<RefreshedVideo snapshotSignature="selected-file-snapshot-3" />);
+        await vi.waitFor(async () => {
+            await flushHookEffects();
+            expect(screen.findAllByType('VideoView')).toHaveLength(1);
+            expect(screen.findAllByType('VideoView')[0].props.player).not.toBe(player);
+        });
+        expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview');
+        expect(media.readChunk).toHaveBeenCalled();
+    });
+
+    it.each<SessionStatFileResponse>([
+        { success: false, error: 'Machine disconnected' },
+        { success: true, exists: true, modifiedMs: 2 },
+        { success: true, exists: true, sizeBytes: 3 },
+    ])('reports unavailable video revision metadata while retaining playback, then recovers on a valid refresh: %j', async (stat) => {
+        const screen = await renderScreen(<RefreshedVideo snapshotSignature="snapshot-1" />);
+        await vi.waitFor(() => expect(screen.findAllByType('VideoView')).toHaveLength(1));
+        const player = screen.findAllByType('VideoView')[0].props.player;
+        player.currentTime = 15;
+        media.stat = stat;
+        await screen.update(<RefreshedVideo snapshotSignature="snapshot-2" />);
+        await vi.waitFor(() => expect(screen.findAllHostsByTestId('video-metadata-error')).toHaveLength(1));
+        expect(screen.findAllByType('VideoView')[0].props.player).toBe(player);
+        expect(player.currentTime).toBe(15);
+        expect(media.cleanup).not.toHaveBeenCalled();
+        media.stat = { success: true, exists: true, kind: 'file', sizeBytes: 3, modifiedMs: 2 };
+        await screen.update(<RefreshedVideo snapshotSignature="snapshot-3" />);
+        await vi.waitFor(async () => {
+            await flushHookEffects();
+            expect(screen.findAllByType('VideoView')).toHaveLength(1);
+            expect(screen.findAllByType('VideoView')[0].props.player).not.toBe(player);
+        });
+        expect(screen.findAllHostsByTestId('video-metadata-error')).toHaveLength(0);
+        expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview');
+    });
 
     it('loads a video using encrypted chunk RPCs and exposes playback loading, native controls and codec errors', async () => {
         const screen = await renderScreen(<FileBinaryState theme={theme} filePath="demo.mp4" {...videoProps} />);
@@ -120,7 +215,7 @@ describe('session video file preview', () => {
         media.cleanup.mockClear();
         await act(async () => (await appState).emit('background'));
         expect(screen.findAllByType('VideoView')).toHaveLength(0);
-        expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview');
+        expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview-2');
     });
 
     it('cleans up a source delivered after navigation blur during a pending chunk RPC', async () => {
@@ -158,7 +253,7 @@ describe('session video file preview', () => {
         expect(screen.findAllByType('VideoView')[0]).toBe(view);
         expect(media.cleanup).not.toHaveBeenCalled();
         expect(media.player.pause).not.toHaveBeenCalled();
-        expect(media.player.staysActiveInBackground).toBe(false);
+        expect(view.props.player.staysActiveInBackground).toBe(false);
         await act(async () => (await appState).emit('active'));
         await act(async () => view.props.onFullscreenExit?.());
         expect(screen.findAllByType('VideoView')[0]).toBe(view);
