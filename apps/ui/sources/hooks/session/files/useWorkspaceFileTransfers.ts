@@ -376,6 +376,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
 
         const nativeSinkRef: { current: NativeCacheFileSink | null } = { current: null };
         let keepNativeSink = false;
+        let failureMessage: string | null = null;
         const downloadedChunks: Uint8Array[] = [];
         let webBufferedBytes = 0;
         let webExceededLimit = false;
@@ -478,6 +479,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
             }
 
             if (!res.ok) {
+                failureMessage = res.error;
                 setDownloadState(controller.signal.aborted ? { status: 'canceled' } : { status: 'error', error: res.error });
                 return { ok: false, error: res.error };
             }
@@ -540,15 +542,24 @@ export function useWorkspaceFileTransfers(params: Readonly<{
             return { ok: true };
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to download file';
+            failureMessage = message;
             setDownloadState(controller.signal.aborted ? { status: 'canceled' } : { status: 'error', error: message });
             return { ok: false, error: message, ...(controller.signal.aborted ? { canceled: true } : {}) };
         } finally {
-            if (nativeSinkRef.current && !keepNativeSink) await nativeSinkRef.current.cleanup();
-            if (Platform.OS === 'web') {
-                webBufferedBytes = 0;
-                downloadedChunks.length = 0;
+            try {
+                if (nativeSinkRef.current && !keepNativeSink) await nativeSinkRef.current.cleanup();
+            } catch (error) {
+                const cleanupMessage = error instanceof Error ? error.message : 'Failed to clean up downloaded file';
+                const message = failureMessage ? `${failureMessage}; cleanup failed: ${cleanupMessage}` : cleanupMessage;
+                setDownloadState({ status: 'error', error: message });
+                return { ok: false, error: message };
+            } finally {
+                if (Platform.OS === 'web') {
+                    webBufferedBytes = 0;
+                    downloadedChunks.length = 0;
+                }
+                downloadAbortRef.current = null;
             }
-            downloadAbortRef.current = null;
         }
     }, [sessionId]);
 

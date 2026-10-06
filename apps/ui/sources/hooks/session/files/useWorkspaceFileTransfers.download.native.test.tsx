@@ -9,6 +9,7 @@ const native = vi.hoisted(() => ({
     files: new Map<string, number[]>(),
     saveFile: vi.fn(), openFile: vi.fn(), shareFile: vi.fn(),
     closeError: null as Error | null,
+    deleteError: null as Error | null,
     rpc: vi.fn(),
 }));
 
@@ -17,14 +18,7 @@ installSessionFilesHookCommonModuleMocks({
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
         return createReactNativeWebMock({ Platform: { OS: 'android' } });
     },
-    storage: async () => {
-        const { createStorageModuleStub, createReactiveStorageStoreMock } = await import('@/dev/testkit/mocks/storage');
-        const storage = createReactiveStorageStoreMock({
-            sessions: { 'session-1': createSessionFixture({ active: true }) },
-            machines: { 'machine-1': createMachineFixture() },
-        });
-        return createStorageModuleStub({ storage, getStorage: () => storage });
-    },
+    storage: async (importOriginal) => await importOriginal(),
 });
 vi.mock('@/sync/api/session/apiSocket', () => ({ apiSocket: { machineRPC: (...args: unknown[]) => native.rpc(...args) } }));
 vi.mock('@/sync/http/client', () => ({ ServerFetchAbortedForServerSwitchError: class extends Error {}, serverFetch: async () => new Response(JSON.stringify({
@@ -59,7 +53,10 @@ vi.mock('expo-file-system', () => ({
                 close: () => { if (native.closeError) throw native.closeError; },
             };
         }
-        delete() { native.files.delete(this.uri); }
+        delete() {
+            if (native.deleteError) throw native.deleteError;
+            native.files.delete(this.uri);
+        }
     },
 }));
 
@@ -67,9 +64,15 @@ import type { useWorkspaceFileTransfers } from './useWorkspaceFileTransfers';
 
 describe('Android workspace downloads through the canonical transfer pipeline', () => {
     afterEach(() => vi.useRealTimers());
-    beforeEach(() => {
+    beforeEach(async () => {
+        const { storage } = await import('@/sync/domains/state/storage');
+        storage.setState({
+            sessions: { 'session-1': createSessionFixture({ id: 'session-1', active: true, metadata: { machineId: 'machine-1', path: '/workspace', host: 'test-machine' } }) },
+            machines: { 'machine-1': createMachineFixture({ id: 'machine-1', active: true }) },
+        });
         native.files.clear();
         native.closeError = null;
+        native.deleteError = null;
         native.saveFile.mockReset().mockImplementation(async (uri: string) => {
             expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
             return { canceled: false, uri: 'content://downloads/recording.mp4' };
@@ -119,6 +122,22 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
         await act(async () => { expect((await api().startDownload({ path: 'recording.mp4', asZip: false })).ok).toBe(false); });
         expect(api().downloadState.status).toBe('canceled');
         expect(native.files.size).toBe(0);
+    });
+
+    it('reports failed cancellation cleanup and releases the next download', async () => {
+        const api = await mount();
+        native.saveFile.mockResolvedValueOnce({ canceled: true });
+        native.deleteError = new Error('Cache deletion failed');
+        await act(async () => {
+            expect(await api().startDownload({ path: 'recording.mp4', asZip: false }))
+                .toEqual({ ok: false, error: 'Cache deletion failed' });
+        });
+        expect(api().downloadState).toEqual({ status: 'error', error: 'Cache deletion failed' });
+        native.deleteError = null;
+        await act(async () => {
+            expect(await api().startDownload({ path: 'recording.mp4', asZip: false })).toEqual({ ok: true });
+        });
+        expect(api().downloadState.status).toBe('done');
     });
 
     it('reports failed OS handoff rather than claiming the download was saved', async () => {
