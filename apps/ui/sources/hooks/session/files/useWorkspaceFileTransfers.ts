@@ -533,7 +533,7 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                     await nativeSinkRef.current.cleanup();
                 }
                 setDownloadState({ status: 'canceled' });
-                return { ok: false, error: 'Download canceled' };
+                return { ok: false, error: 'Download canceled', canceled: true };
             }
 
             setDownloadState((prev) => prev.status === 'downloading'

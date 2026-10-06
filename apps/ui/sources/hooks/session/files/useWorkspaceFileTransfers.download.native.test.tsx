@@ -174,7 +174,7 @@ describe('Android workspace downloads through the canonical transfer pipeline', 
             await actionEntered;
             api().cancelDownload();
             complete();
-            expect(await download).toMatchObject({ ok: false });
+            expect(await download).toEqual({ ok: false, error: 'Download canceled', canceled: true });
         });
         const uri = native.openFile.mock.calls[0]?.[0];
         expect(native.files.get(uri)).toEqual([1, 2, 3, 4]);
