@@ -9,8 +9,6 @@ import { createNativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileS
 const PREVIEW_CACHE_DIRECTORY_NAME = 'happier-previews';
 const PREVIEW_SIZE_LIMIT_ERROR = 'File exceeds preview size limit';
 
-let previewFileCounter = 0;
-
 export type SessionFilePreviewSource = Readonly<{
     uri: string;
     sizeBytes: number;
@@ -49,15 +47,6 @@ function normalizeMaxBytes(value: number | null | undefined): number | null {
 function basename(path: string): string {
     const normalized = String(path ?? '').replace(/\\/g, '/');
     return normalized.split('/').filter(Boolean).at(-1) ?? 'preview';
-}
-
-function sanitizePreviewFileName(filePath: string): string {
-    previewFileCounter += 1;
-    const safeBase = basename(filePath)
-        .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_')
-        .replace(/^\.+/g, '_')
-        .slice(0, 120) || 'preview';
-    return `${Date.now()}-${previewFileCounter}-${safeBase}`;
 }
 
 function mergeChunks(chunks: readonly Uint8Array[], totalBytes: number): Uint8Array {
@@ -127,7 +116,7 @@ async function createNativeFilePreviewDestination(input: Readonly<{
 }>): Promise<SessionFilePreviewDestinationResult> {
     const sinkResult = await createNativeCacheFileSink({
         directoryName: PREVIEW_CACHE_DIRECTORY_NAME,
-        name: sanitizePreviewFileName(input.filePath),
+        name: basename(input.filePath),
     });
     if (!sinkResult.ok) return sinkResult;
 

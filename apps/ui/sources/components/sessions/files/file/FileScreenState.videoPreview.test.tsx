@@ -1,12 +1,14 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderScreen, standardCleanup } from '@/dev/testkit';
+import { createSessionFixture, createMachineFixture, renderScreen, standardCleanup } from '@/dev/testkit';
 import { FileBinaryState } from './FileScreenState';
 import { Platform } from 'react-native';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { createEncryptedTransferChunkEnvelope } from '@/sync/domains/transfers/runtime/bulkTransferPipeline/transferChunkEncryption';
 
 const media = vi.hoisted(() => ({
-    download: vi.fn(), cleanup: vi.fn(),
+    rpc: vi.fn(), readChunk: vi.fn(), cleanup: vi.fn(),
     focused: true,
     player: { pause: vi.fn(), status: 'loading', addListener: vi.fn(), staysActiveInBackground: true },
     statusListener: null as null | ((event: { status: string; error?: { message: string } }) => void),
@@ -24,7 +26,8 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key) => key });
 });
 vi.mock('@react-navigation/native', () => ({ useIsFocused: () => media.focused }));
-vi.mock('@/sync/domains/transfers/runtime/bulkTransferPipeline', () => ({ downloadDaemonSessionFileToDestination: media.download }));
+// Network transport boundaries; transfer routing, decryption and destination cleanup stay real.
+vi.mock('@/sync/api/session/apiSocket', () => ({ apiSocket: { sessionRPC: media.rpc, machineRPC: media.rpc } }));
 vi.mock('expo-video', () => ({
     VideoView: 'VideoView',
     useVideoPlayer: (_source: unknown, setup?: (player: typeof media.player) => void) => {
@@ -51,17 +54,17 @@ vi.mock('expo-file-system', () => ({
 const theme = { colors: { surface: { base: 'base', inset: 'inset' }, border: { default: 'border' }, text: { secondary: 'secondary' } } };
 const videoProps = { sessionId: 's1', videoMimeType: 'video/mp4', isActive: true };
 
-type DownloadInput = {
-    destination: { writeBytes: (bytes: Uint8Array) => Promise<void>; close: () => Promise<void> };
-    onInit?: (init: { name: string; sizeBytes: number }) => Promise<unknown>;
-    signal: AbortSignal;
-};
-
 describe('session video file preview', () => {
     beforeEach(async () => {
         Object.defineProperty(Platform, 'OS', { value: 'web', configurable: true });
         // Resolve the lazy platform module before React's render/flush window.
         await import('@/components/sessions/files/content/FileVideoPreview');
+        const { storage } = await import('@/sync/domains/state/storage');
+        storage.setState({
+            sessions: { s1: createSessionFixture({ id: 's1', active: true, metadata: { machineId: 'm1', path: '/workspace', host: 'test-machine' } }) },
+            machines: { m1: createMachineFixture({ id: 'm1', active: true }) },
+        });
+        vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ features: { machines: { enabled: true, transfer: { enabled: true, serverRouted: { enabled: true } } } }, capabilities: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
         media.focused = true;
         media.statusListener = null;
         media.player.status = 'loading';
@@ -69,18 +72,32 @@ describe('session video file preview', () => {
             media.statusListener = listener;
             return { remove: vi.fn() };
         });
-        media.download.mockImplementation(async (input: DownloadInput) => {
-            await input.onInit?.({ name: 'demo.mp4', sizeBytes: 12_000_000 });
-            await input.destination.writeBytes(new Uint8Array([1, 2, 3]));
-            await input.destination.close();
-            return { ok: true, name: 'demo.mp4', sizeBytes: 12_000_000 };
+        let recipientPublicKeyBase64 = '';
+        media.readChunk.mockImplementation(async (request: { downloadId: string; index: number }) => ({
+            success: true,
+            ...await createEncryptedTransferChunkEnvelope({
+                transferId: request.downloadId, sequence: request.index, payload: new Uint8Array([1, 2, 3]),
+                recipientPublicKeyBase64, randomBytes: length => new Uint8Array(length).fill(19),
+            }),
+            isLast: true,
+        }));
+        media.rpc.mockImplementation(async (_sessionId: string, method: string, payload: { recipientPublicKeyBase64?: string }) => {
+            if (method === RPC_METHODS.STAT_FILE) return { success: true, exists: true, kind: 'file', sizeBytes: 3 };
+            if (method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_INIT) {
+                recipientPublicKeyBase64 = payload.recipientPublicKeyBase64 ?? '';
+                return { success: true, downloadId: 'video-download', name: 'demo.mp4', sizeBytes: 3, chunkSizeBytes: 3 };
+            }
+            if (method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_CHUNK) return media.readChunk(payload);
+            if (method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_FINALIZE || method === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_ABORT) return { success: true };
+            throw new Error(`Unexpected RPC: ${method}`);
         });
-        vi.stubGlobal('URL', { createObjectURL: () => 'blob:video-preview', revokeObjectURL: media.cleanup });
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:video-preview');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(media.cleanup);
         (await appState).emit('active');
     });
-    afterEach(() => { standardCleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+    afterEach(() => { standardCleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-    it('loads a video over the text and image limits using chunk transfer and exposes playback loading, native controls and codec errors', async () => {
+    it('loads a video using encrypted chunk RPCs and exposes playback loading, native controls and codec errors', async () => {
         const screen = await renderScreen(<FileBinaryState theme={theme} filePath="demo.mp4" {...videoProps} />);
         await vi.waitFor(() => expect(screen.findAllByType('VideoView')).toHaveLength(1));
         expect(screen.findAllByType('VideoView')[0].props.nativeControls).toBe(true);
@@ -106,26 +123,24 @@ describe('session video file preview', () => {
         expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview');
     });
 
-    it('aborts a pending transfer on navigation blur and cleans up a source delivered after cancellation', async () => {
+    it('cleans up a source delivered after navigation blur during a pending chunk RPC', async () => {
         let finish: (() => void) | undefined;
-        let signal: AbortSignal | undefined;
-        media.download.mockImplementation(async (input: DownloadInput) => {
-            signal = input.signal;
-            await new Promise<void>((resolve) => { finish = resolve; });
-            return { ok: true, name: 'demo.mp4', sizeBytes: 12_000_000 };
+        const readChunk = media.readChunk.getMockImplementation()!;
+        media.readChunk.mockImplementation(async (request: { downloadId: string; index: number }) => {
+            await new Promise<void>(resolve => { finish = resolve; });
+            return readChunk(request);
         });
         const screen = await renderScreen(<FileBinaryState theme={theme} filePath="demo.mp4" {...videoProps} />);
-        await vi.waitFor(() => expect(signal).toBeDefined());
+        await vi.waitFor(() => expect(finish).toBeDefined());
         media.focused = false;
         await act(async () => screen.tree.update(<FileBinaryState theme={theme} filePath="demo.mp4" {...videoProps} />));
-        expect(signal?.aborted).toBe(true);
         await act(async () => { finish?.(); });
+        await vi.waitFor(() => expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview'));
         expect(screen.findAllByType('VideoView')).toHaveLength(0);
-        expect(media.cleanup).toHaveBeenCalledWith('blob:video-preview');
     });
 
     it('shows a transfer failure and lets the user retry', async () => {
-        media.download.mockResolvedValueOnce({ ok: false, error: 'Machine disconnected' });
+        media.rpc.mockResolvedValueOnce({ success: false, error: 'Machine disconnected' });
         const screen = await renderScreen(<FileBinaryState theme={theme} filePath="demo.mp4" {...videoProps} />);
         await vi.waitFor(() => expect(screen.findAllHostsByTestId('file-video-error')).toHaveLength(1));
         await act(async () => screen.findByTestId('file-video-retry')!.props.onPress());
@@ -147,7 +162,7 @@ describe('session video file preview', () => {
         await act(async () => (await appState).emit('active'));
         await act(async () => view.props.onFullscreenExit?.());
         expect(screen.findAllByType('VideoView')[0]).toBe(view);
-        expect(media.download).toHaveBeenCalledTimes(1);
+        expect(media.rpc.mock.calls.filter(call => call[1] === RPC_METHODS.DAEMON_BULK_TRANSFER_DOWNLOAD_INIT)).toHaveLength(1);
         await act(async () => (await appState).emit('background'));
         expect(screen.findAllByType('VideoView')).toHaveLength(0);
         expect(media.player.pause).toHaveBeenCalled();

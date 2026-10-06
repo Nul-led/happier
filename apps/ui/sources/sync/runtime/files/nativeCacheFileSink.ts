@@ -1,3 +1,4 @@
+import { log } from '@/log';
 import { randomUUID } from '@/platform/randomUUID';
 
 type ExpoFileHandleLike = {
@@ -37,17 +38,32 @@ export type NativeCacheFileSinkResult =
     | Readonly<{ ok: true; sink: NativeCacheFileSink }>
     | Readonly<{ ok: false; error: string }>;
 
-function sanitizeCacheFileName(name: string): string {
-    const trimmed = String(name ?? '').trim();
-    const safe = trimmed
+// Android/Linux cache filesystems limit each filename component to 255 UTF-8 bytes.
+const MAX_CACHE_NAME_BYTES = 255;
+const filenameEncoder = new TextEncoder();
+
+function truncateUtf8(value: string, maxBytes: number): string {
+    let bytes = 0;
+    let result = '';
+    for (const character of value) {
+        bytes += filenameEncoder.encode(character).byteLength;
+        if (bytes > maxBytes) break;
+        result += character;
+    }
+    return result;
+}
+
+function sanitizeCacheFileName(name: string, maxBytes = MAX_CACHE_NAME_BYTES): string {
+    const safe = String(name ?? '').trim()
         .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_')
-        .replace(/^\.+/g, '_');
+        .replace(/^\.+/g, '_') || 'preview';
     const extensionIndex = safe.lastIndexOf('.');
     const extension = extensionIndex > 0 ? safe.slice(extensionIndex) : '';
-    if (safe.length > 160 && extension && extension.length < 160) {
-        return `${safe.slice(0, 160 - extension.length)}${extension}`;
+    const extensionBytes = filenameEncoder.encode(extension).byteLength;
+    if (extension && extensionBytes < maxBytes) {
+        return `${truncateUtf8(safe.slice(0, extensionIndex), maxBytes - extensionBytes)}${extension}`;
     }
-    return safe.slice(0, 160) || 'preview';
+    return truncateUtf8(safe, maxBytes);
 }
 
 export async function createNativeCacheFileSink(input: Readonly<{
@@ -70,14 +86,29 @@ export async function createNativeCacheFileSink(input: Readonly<{
         );
         await cacheSubdir.create({ idempotent: true, intermediates: true });
 
-        const file = new FileSystem.File(cacheSubdir, `${randomUUID()}-${sanitizeCacheFileName(input.name)}`);
+        const prefix = `${randomUUID()}-`;
+        const name = sanitizeCacheFileName(input.name, MAX_CACHE_NAME_BYTES - filenameEncoder.encode(prefix).byteLength);
+        const file = new FileSystem.File(cacheSubdir, `${prefix}${name}`);
         file.create();
-        const handle = file.open();
+        let handle: ExpoFileHandleLike;
+        try {
+            handle = file.open();
+        } catch (error) {
+            try {
+                file.delete();
+            } catch (cleanupError) {
+                throw Object.assign(new Error(`${error instanceof Error ? error.message : String(error)}; Failed to clean up cache file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`), {
+                    errors: [error, cleanupError],
+                });
+            }
+            throw error;
+        }
         if (typeof handle.offset === 'number' || handle.offset === null) {
             handle.offset = 0;
         }
 
         let closed = false;
+        let removed = false;
         const close = async () => {
             if (closed) return;
             handle.close();
@@ -85,15 +116,26 @@ export async function createNativeCacheFileSink(input: Readonly<{
         };
 
         const cleanup = async () => {
+            const errors: unknown[] = [];
             try {
                 await close();
-            } catch {
-                // Best-effort cleanup.
+            } catch (error) {
+                errors.push(error);
             }
             try {
-                file.delete();
-            } catch {
-                // Best-effort cleanup.
+                if (!removed) {
+                    file.delete();
+                    removed = true;
+                }
+            } catch (error) {
+                errors.push(error);
+            }
+            if (errors.length > 0) {
+                log.log(`Failed to clean up cache file: ${errors.map(error => error instanceof Error ? error.message : String(error)).join('; ')}`);
+            }
+            if (errors.length === 1) throw errors[0];
+            if (errors.length > 1) {
+                throw Object.assign(new Error(errors.map(error => error instanceof Error ? error.message : String(error)).join('; ')), { errors });
             }
         };
 
