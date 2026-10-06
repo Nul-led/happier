@@ -8,7 +8,7 @@ import { downloadDaemonSessionFileToDestination, uploadDaemonSessionFileFromRead
 import { sessionStatFile } from '@/sync/ops';
 import { isSafeWorkspaceRelativePath } from '@/utils/path/isSafeWorkspaceRelativePath';
 import { resolveLocalUploadSourceSizeBytes } from '@/sync/runtime/files/localUploadSourceReader';
-import { createNativeCacheFileSink, type NativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
+import { createNativeCacheFileSink, shareNativeCacheFile, type NativeCacheFileSink } from '@/sync/runtime/files/nativeCacheFileSink';
 import { resolveWebFileBufferMaxBytes } from '@/sync/runtime/files/webFileBufferBudget';
 
 export type WorkspaceUploadEntry =
@@ -498,10 +498,10 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                     setDownloadState({ status: 'canceled' });
                     return { ok: false, error: 'Download canceled', canceled: true };
                 }
-                if (Platform.OS === 'android') {
+                const action = input.action ?? 'save';
+                if (Platform.OS === 'android' && action !== 'share') {
                     const { performAndroidFileAction } = await import('@/sync/runtime/files/nativeFileActions');
                     if (!beginNativeHandoff()) return { ok: false, error: 'Download canceled', canceled: true };
-                    const action = input.action ?? 'save';
                     const result = await performAndroidFileAction({
                         fileUri: nativeSinkRef.current.fileUri,
                         name: res.name || 'download',
@@ -511,12 +511,20 @@ export function useWorkspaceFileTransfers(params: Readonly<{
                         setDownloadState({ status: 'canceled' });
                         return { ok: false, error: 'Download canceled', canceled: true };
                     }
-                    keepNativeSink = action !== 'save';
+                    keepNativeSink = action === 'open';
                 } else {
-                    const Sharing = await import('expo-sharing');
-                    if (!await Sharing.isAvailableAsync()) throw new Error(t('files.fileSharingUnavailable'));
-                    if (!beginNativeHandoff()) return { ok: false, error: 'Download canceled', canceled: true };
-                    await Sharing.shareAsync(nativeSinkRef.current.fileUri);
+                    const result = await shareNativeCacheFile({
+                        fileUri: nativeSinkRef.current.fileUri,
+                        name: res.name || 'download',
+                        isCurrent: () => !controller.signal.aborted,
+                        onHandoff: () => { beginNativeHandoff(); },
+                    });
+                    if (result.status === 'canceled') {
+                        setDownloadState({ status: 'canceled' });
+                        return { ok: false, error: 'Download canceled', canceled: true };
+                    }
+                    if (result.status === 'unavailable') throw new Error(t('files.fileSharingUnavailable'));
+                    keepNativeSink = result.retainCacheFile;
                 }
             } else {
                 setDownloadState({ status: 'error', error: 'Download sink unavailable' });

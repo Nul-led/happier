@@ -1,4 +1,5 @@
 import { log } from '@/log';
+import { t } from '@/text';
 import { randomUUID } from '@/platform/randomUUID';
 
 type ExpoFileHandleLike = {
@@ -77,7 +78,7 @@ export async function createNativeCacheFileSink(input: Readonly<{
         const cacheRoot = FileSystem.Paths?.cache ?? null;
         const cacheRootUri = typeof cacheRoot === 'string' ? cacheRoot.trim() : String(cacheRoot?.uri ?? '').trim();
         if (!cacheRoot || !cacheRootUri) {
-            return { ok: false, error: 'No cache directory available' };
+            return { ok: false, error: t('errors.operationFailed') };
         }
 
         const cacheSubdir = new FileSystem.Directory(
@@ -97,7 +98,7 @@ export async function createNativeCacheFileSink(input: Readonly<{
             try {
                 file.delete();
             } catch (cleanupError) {
-                throw Object.assign(new Error(`${error instanceof Error ? error.message : String(error)}; Failed to clean up cache file: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`), {
+                throw Object.assign(new Error(`${error instanceof Error ? error.message : String(error)}; ${t('files.fileCleanupFailed')}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`), {
                     errors: [error, cleanupError],
                 });
             }
@@ -151,6 +152,49 @@ export async function createNativeCacheFileSink(input: Readonly<{
             },
         };
     } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : 'Failed to create cache file sink' };
+        return { ok: false, error: error instanceof Error ? error.message : t('errors.operationFailed') };
+    }
+}
+
+export type NativeCacheFileShareResult =
+    | Readonly<{ status: 'shared'; retainCacheFile: boolean }>
+    | Readonly<{ status: 'unavailable' }>
+    | Readonly<{ status: 'canceled' }>;
+
+export async function shareNativeCacheFile(input: Readonly<{
+    fileUri: string;
+    name: string;
+    mimeType?: string;
+    UTI?: string;
+    dialogTitle?: string;
+    isCurrent?: () => boolean;
+    onHandoff?: () => void;
+}>): Promise<NativeCacheFileShareResult> {
+    try {
+        if (input.isCurrent?.() === false) return { status: 'canceled' };
+        const { Platform } = await import('react-native');
+        if (Platform.OS === 'android') {
+            const { performAndroidFileAction } = await import('./nativeFileActions');
+            if (input.isCurrent?.() === false) return { status: 'canceled' };
+            input.onHandoff?.();
+            await performAndroidFileAction({ fileUri: input.fileUri, name: input.name, action: 'share', dialogTitle: input.dialogTitle });
+            // The chooser resolves at handoff; recipients still own permission to read these bytes.
+            return { status: 'shared', retainCacheFile: true };
+        }
+        const Sharing = await import('expo-sharing');
+        const available = await Sharing.isAvailableAsync();
+        if (input.isCurrent?.() === false) return { status: 'canceled' };
+        if (!available) return { status: 'unavailable' };
+        input.onHandoff?.();
+        await Sharing.shareAsync(input.fileUri, {
+            ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+            ...(input.UTI ? { UTI: input.UTI } : {}),
+            ...(input.dialogTitle ? { dialogTitle: input.dialogTitle } : {}),
+        });
+        // Expo iOS resolves when the activity controller completes or is dismissed.
+        return { status: 'shared', retainCacheFile: false };
+    } catch (error) {
+        log.log(`Failed to share cache file: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
     }
 }
